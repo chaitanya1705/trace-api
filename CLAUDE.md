@@ -32,7 +32,7 @@ Applies to this project only. Repos: trace-web (https://github.com/chaitanya1705
 
 ## How to run
 ```
-python -m venv .venv && .venv/Scripts/pip install -e ".[dev]" pgserver   # or .venv/bin on Linux
+python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt   # or .venv/bin on Linux; always run via the venv python
 .venv/Scripts/python -m pytest -q              # DB tests start their own Postgres
 .venv/Scripts/python -m ruff check app tests
 .venv/Scripts/python -m app.openapi_export     # regenerate docs/openapi.json (CI: add --check) after changing any API
