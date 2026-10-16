@@ -495,6 +495,21 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "IndexRequest": {
+        "properties": {
+          "repository_binding_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Repository Binding Ids",
+            "type": "array"
+          }
+        },
+        "title": "IndexRequest",
+        "type": "object"
+      },
       "InvitationCreated": {
         "properties": {
           "email": {
@@ -3234,6 +3249,98 @@
           }
         },
         "summary": "Code Graph",
+        "tags": [
+          "graph"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/graph/index": {
+      "get": {
+        "description": "Latest run per repository binding, newest first. The UI polls this while a run is queued or running.",
+        "operationId": "list_index_runs_api_v1_projects__project_id__graph_index_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Index Runs",
+        "tags": [
+          "graph"
+        ]
+      },
+      "post": {
+        "description": "Queue indexing of the project's bound repositories at their selected branch/commit. Read-only against GitHub.\nA repository that already has a queued or running request returns that request instead of starting another.",
+        "operationId": "request_index_api_v1_projects__project_id__graph_index_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Index",
         "tags": [
           "graph"
         ]

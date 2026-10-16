@@ -166,3 +166,28 @@ def test_retrieval_manifest_round_trip(repo, pid):
     assert mid == repo.record_retrieval(pid, "run_1", "exe_1", ["evd_a", "evd_b"], cutoff=T0, query_template="runtime_observations@1", truncated=False)
     assert repo.citable_ids(pid, mid) == {"evd_a", "evd_b"}
     assert repo.check_citations(pid, mid, ["evd_a", "evd_zzz"]) == ["evd_zzz"]
+
+
+def test_community_depth_goes_one_level_deeper_when_one_folder_holds_the_code():
+    from app.graph.indexer import _community_depth, _community_of
+
+    assert _community_depth(["src/a/x.py", "src/b/y.py", "src/c/z.py", "src/d/w.py", "src/e/v.py", "docs/r.py"]) == 2
+    assert _community_depth(["app/x.py", "lib/y.py", "web/z.py"]) == 1
+    assert _community_of("src/features/pay/a.ts", 2) == "src/features" and _community_of("a.ts", 2) == "(root)"
+
+
+def test_dirty_checkout_gets_its_own_revision_and_latest_build_per_repository_wins(repo, driver, pid, tmp_path):
+    import subprocess
+
+    root = _write(tmp_path, {"a.py": "def a():\n    return 1\n"})
+    run = lambda *a: subprocess.run(["git", "-C", root, *a], check=True, capture_output=True)  # noqa: E731
+    run("init", "-q")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "c1")
+    clean = index_repository(repo, project_id=pid, root=root, repository_name="fx")
+    (tmp_path / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")  # uncommitted edit
+    dirty = index_repository(repo, project_id=pid, root=root, repository_name="fx")
+    assert "+wip-" in dirty.commit_sha and dirty.revision_id != clean.revision_id  # the commit's own content is never overwritten
+    with driver.session(database=_creds()[3]) as s:
+        st = {r["id"]: r["st"] for r in s.run("MATCH (b:GraphBuild {project_id: $p}) RETURN b.id AS id, b.status AS st", p=pid)}
+    assert st[dirty.build_id] == "published" and st[clean.build_id] == "superseded"  # one published build per repository

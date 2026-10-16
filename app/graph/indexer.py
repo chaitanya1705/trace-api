@@ -43,6 +43,7 @@ class IndexReport:
     gaps: dict[str, int] = field(default_factory=dict)
     skipped: int = 0
     status: str = "published"
+    extractor: str = ""
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -55,6 +56,14 @@ def read_commit_sha(path: str) -> str | None:
         return sha if out.returncode == 0 and len(sha) >= 7 else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _is_dirty(path: str) -> bool:
+    try:
+        out = subprocess.run(["git", "-C", path, "status", "--porcelain"], capture_output=True, text=True, timeout=30)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def walk_repo(root: str) -> tuple[list[tuple[str, str]], int]:
@@ -87,6 +96,20 @@ def walk_repo(root: str) -> tuple[list[tuple[str, str]], int]:
             if len(out) >= MAX_FILES:
                 return out, skipped + 1
     return out, skipped
+
+
+def _community_of(path: str, depth: int) -> str:
+    dirs = path.split("/")[:-1]
+    return "/".join(dirs[:depth]) if dirs else "(root)"
+
+
+def _community_depth(paths: list[str]) -> int:
+    """Group by top-level folder; when one folder holds most of the code (a lone src/), group one level deeper."""
+    if not paths:
+        return 1
+    tops = [p.split("/")[0] if "/" in p else "(root)" for p in paths]
+    biggest = max(set(tops), key=tops.count)
+    return 2 if tops.count(biggest) / len(tops) > 0.8 and biggest != "(root)" else 1
 
 
 def _chunks(text: str) -> list[tuple[int, int, str]]:
@@ -138,6 +161,8 @@ def index_repository(
     organization_id: str = "local",
     project_name: str | None = None,
     provider: str = "local",
+    provider_repository_id: str | None = None,
+    canonical_url: str | None = None,
     commit_sha: str | None = None,
     extractor: Extractor | None = None,
 ) -> IndexReport:
@@ -145,10 +170,14 @@ def index_repository(
     files, skipped = walk_repo(root)
     if not files:
         raise ValueError("no readable source files found")
-    sha = commit_sha or read_commit_sha(root) or hashlib.sha256("".join(f"{p}\0{hashlib.sha256(t.encode()).hexdigest()}" for p, t in files).encode()).hexdigest()
+    tree_hash = hashlib.sha256("".join(f"{p}\0{hashlib.sha256(t.encode()).hexdigest()}" for p, t in files).encode()).hexdigest()
+    sha = commit_sha or read_commit_sha(root)
+    if commit_sha is None:
+        # A local checkout with uncommitted edits is NOT its HEAD commit: give it its own revision so a commit's content stays immutable.
+        sha = (f"{sha}+wip-{tree_hash[:12]}" if sha and _is_dirty(root) else sha) or tree_hash
     now = datetime.now(UTC)
     prj = I.project_node_id(project_id)
-    rep = I.repository_id(project_id, provider, repository_name)
+    rep = I.repository_id(project_id, provider, provider_repository_id or repository_name)
     rev = I.revision_id(project_id, rep, sha)
     with repo._driver.session(database=repo._db) as s:
         attempt = s.run("MATCH (b:GraphBuild {project_id: $p, revision_id: $r}) RETURN count(b) AS n", p=project_id, r=rev).single()["n"] + 1
@@ -157,7 +186,7 @@ def index_repository(
 
     nodes: list[NodeWrite] = [
         prepare_node("Project", prj, project_id, {"organization_id": organization_id, "name": project_name or project_id}, now=now),
-        prepare_node("Repository", rep, project_id, {"provider": provider, "provider_repository_id": repository_name, "canonical_url": f"{provider}://{repository_name}"}, now=now),
+        prepare_node("Repository", rep, project_id, {"provider": provider, "provider_repository_id": provider_repository_id or repository_name, "canonical_url": canonical_url or f"{provider}://{repository_name}"}, now=now),
         prepare_node("Revision", rev, project_id, {"repository_id": rep, "commit_sha": sha.lower()}, now=now),
         prepare_node("GraphBuild", bld, project_id, {"revision_id": rev, "extractor_version": ev, "output_schema_version": OUTPUT_SCHEMA_VERSION, "ontology_version": ONTOLOGY_VERSION, "status": "staging", "counts": "{}"}, now=now),
     ]
@@ -170,7 +199,7 @@ def index_repository(
     rel("HAS_REVISION", "Repository", rep, "Revision", rev)
     rel("INDEXES", "GraphBuild", bld, "Revision", rev)
 
-    report = IndexReport(project_id, rep, rev, bld, "", sha, skipped=skipped)
+    report = IndexReport(project_id, rep, rev, bld, "", sha, skipped=skipped, extractor=ev)
     gaps: dict[str, list[str]] = defaultdict(list)
     results: dict[str, FileResult] = {}
     file_ids: dict[str, str] = {}
@@ -203,8 +232,9 @@ def index_repository(
     sym_ids: dict[tuple[str, str], str] = {}  # (path, qualified_name) -> id
     by_name: dict[str, list[tuple[str, str, str]]] = defaultdict(list)  # simple name -> (path, qualified, id)
     communities: dict[str, str] = {}
+    depth = _community_depth(list(results))
     for path, res in results.items():
-        top = path.split("/")[0] if "/" in path else "(root)"
+        top = _community_of(path, depth)
         if top not in communities:
             communities[top] = I.entity_id("CodeCommunity", project_id, bld, top)
             nodes.append(prepare_node("CodeCommunity", communities[top], project_id, {"build_id": bld, "label": top}, now=now))
@@ -272,7 +302,10 @@ def index_repository(
             s.run("MATCH (b:GraphBuild {id: $id, project_id: $p}) SET b.counts = $c", id=bld, p=project_id, c=json.dumps(counts)).consume()
             if s.run("MATCH (:Entity:SourceFile {project_id: $p, revision_id: $r}) RETURN count(*) AS n", p=project_id, r=rev).single()["n"] != report.files:
                 raise RuntimeError("staged file count does not match the extraction")
-            old = [r["id"] for r in s.run("MATCH (b:GraphBuild {project_id: $p, revision_id: $r, status: 'published'}) RETURN b.id AS id", p=project_id, r=rev)]
+            # Latest published build per repository wins: earlier published builds of ANY revision of this repository are superseded.
+            old = [r["id"] for r in s.run(
+                "MATCH (b:GraphBuild {project_id: $p, status: 'published'})-[:INDEXES]->(:Revision {project_id: $p, repository_id: $rep}) RETURN b.id AS id",
+                p=project_id, rep=rep)]
         repo.set_build_status(project_id, bld, "published")
         for b in old:
             repo.set_build_status(project_id, b, "superseded")

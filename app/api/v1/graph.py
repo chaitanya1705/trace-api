@@ -5,14 +5,19 @@ repository is read (staging, failed and superseded builds are invisible), and re
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
+from psycopg import AsyncConnection
+from pydantic import BaseModel, Field
 
 from app.api.v1.deps_graph import neo4j_driver
+from app.audit import audit
 from app.auth.authz import Cap
-from app.auth.deps import ProjectContext, project_access
+from app.auth.deps import ProjectContext, get_conn, project_access
 from app.envelope import wrap
-from app.errors import NotFound
+from app.errors import NotFound, Unprocessable
+from app.jobs import queue
 
 router = APIRouter(tags=["graph"])
 
@@ -36,7 +41,7 @@ def _code_graph(driver, database: str, pid: str, limit: int, community: str | No
         comms = [dict(r) for r in s.run(
             "MATCH (c:CodeCommunity {project_id: $p}) WHERE c.build_id IN $b "
             "OPTIONAL MATCH (:CodeSymbol {project_id: $p})-[m:MEMBER_OF]->(c) "
-            "RETURN c.id AS id, c.label AS label, count(m) AS symbols ORDER BY symbols DESC", p=pid, b=ids)]
+            "WITH c, count(m) AS symbols WHERE symbols > 0 RETURN c.id AS id, c.label AS label, symbols ORDER BY symbols DESC", p=pid, b=ids)]
         # most connected symbols first, so a bounded response keeps the structure that matters
         syms = [dict(r) for r in s.run(
             "MATCH (s:CodeSymbol {project_id: $p})<-[d:DEFINES]-(f:SourceFile {project_id: $p}) WHERE d.build_id IN $b "
@@ -101,3 +106,66 @@ async def symbol_detail(
     if data is None:
         raise NotFound("Symbol not found in this project's published graph")
     return wrap(request, data)
+
+
+# ---- indexing requests (control plane) --------------------------------------------------------------------------------
+class IndexRequest(BaseModel):
+    #: Repository bindings to index; empty = every bound repository of the project.
+    repository_binding_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+
+RUN_COLS = ("id, repository_binding_id, status, stage, requested_ref, commit_sha, build_id, counts, gaps, extractor, error, "
+            "created_at, started_at, finished_at")
+
+
+@router.post("/projects/{project_id}/graph/index", status_code=202)
+async def request_index(
+    request: Request,
+    body: IndexRequest,
+    ctx: ProjectContext = Depends(project_access(Cap.INDEX)),
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Queue indexing of the project's bound repositories at their selected branch/commit. Read-only against GitHub.
+    A repository that already has a queued or running request returns that request instead of starting another."""
+    sel = body.repository_binding_ids
+    rows = await (await conn.execute(
+        "SELECT id, selected_ref, full_name, connection_id FROM repository_bindings WHERE project_id=%s AND archived=false"
+        + (" AND id = ANY(%s)" if sel else "") + " ORDER BY full_name",
+        (ctx.project_id, sel) if sel else (ctx.project_id,))).fetchall()
+    if not rows:
+        raise Unprocessable("This project has no repositories selected. Choose repositories in the Code tab first.")
+    out = []
+    for b in rows:
+        existing = await (await conn.execute(
+            f"SELECT {RUN_COLS} FROM graph_index_runs WHERE repository_binding_id=%s AND status IN ('queued','running')", (b["id"],))).fetchone()
+        if existing:
+            out.append({**existing, "repository": b["full_name"]})
+            continue
+        run = await (await conn.execute(
+            "INSERT INTO graph_index_runs(organization_id, project_id, repository_binding_id, requested_ref, requested_by) VALUES (%s,%s,%s,%s,%s) "
+            f"RETURNING {RUN_COLS}", (ctx.org.organization_id, ctx.project_id, b["id"], b["selected_ref"], ctx.org.principal.user_id))).fetchone()
+        job = await queue.enqueue(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, kind="graph.index",
+                                  payload={"run_id": str(run["id"])}, requested_by=ctx.org.principal.user_id,
+                                  resource_type="graph_index_run", resource_id=run["id"])
+        await conn.execute("UPDATE graph_index_runs SET job_id=%s WHERE id=%s", (job["id"], run["id"]))
+        await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id, action="graph.index.request",
+                    result="success", target_type="repository_binding", target_id=b["id"], details={"ref": b["selected_ref"]})
+        out.append({**run, "repository": b["full_name"]})
+    await conn.commit()
+    return wrap(request, out)
+
+
+@router.get("/projects/{project_id}/graph/index")
+async def list_index_runs(
+    request: Request,
+    ctx: ProjectContext = Depends(project_access(Cap.READ)),
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Latest run per repository binding, newest first. The UI polls this while a run is queued or running."""
+    rows = await (await conn.execute(
+        "SELECT DISTINCT ON (r.repository_binding_id) r.id, r.repository_binding_id, b.full_name AS repository, r.status, r.stage, r.requested_ref, "
+        "r.commit_sha, r.build_id, r.counts, r.gaps, r.extractor, r.error, r.created_at, r.started_at, r.finished_at "
+        "FROM graph_index_runs r JOIN repository_bindings b ON b.id=r.repository_binding_id WHERE r.project_id=%s "
+        "ORDER BY r.repository_binding_id, r.created_at DESC", (ctx.project_id,))).fetchall()
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return wrap(request, rows)

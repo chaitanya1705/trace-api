@@ -40,11 +40,12 @@ Audited 2026-10-17 against a live Neo4j Aura instance. "Enforced" means a test f
 | O12 fixtures | ambiguous call, same-file resolution, partial parse, unsupported language, cycle, reverse-direction blast, failed rebuild, cross-project paths, full-text isolation + truncation, overlapping deployments, conflicting sources, retrieval manifest |
 | Read path for the app | `GET /projects/{id}/graph/code` and `/graph/symbols/{symbol}` (membership-checked, published build only, bounded), shown in trace-web at `/graph` |
 
+Also closed: GitHub source retrieval at an exact commit (`app/connectors/github_source.py`, `app/graph/archive.py`, job `graph.index`, `POST /projects/{id}/graph/index`), with safe extraction, a size cap, no credential forwarded to the download host, and one published build per repository.
+
 ## Still open
 | Gap | Spec | Task |
 |---|---|---|
 | Real Graphify adapter and output schema validation (the built-in extractor is a stand-in; TypeScript parsing is regex-based, so nested/complex syntax can be missed) | O7 | T-001 / T-007 |
-| Safe checkout of a GitHub repository at a SHA (today the indexer reads a local directory) | R-017 | T-007 |
 | Postgres outbox -> graph applier with receipts and reconciliation; project/service/environment nodes are not yet mirrored from the control plane | A2 | T-006 |
 | Ranking, event-hash dedupe and diversity across retrieved items | O8 | T-011 |
 | Late-evidence rule and replay without model calls | O6 | T-012 |

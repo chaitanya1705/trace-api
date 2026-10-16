@@ -13,3 +13,5 @@ secrets/
 
 .api.out
 .api.err
+.worker.out
+.worker.err

@@ -31,12 +31,14 @@ Audience: the session working in `trace-web`. Types come from `docs/openapi.json
 | Environments / services | `GET/PUT /projects/{id}/environments|services` |
 | Tickets | `GET /tickets?view=need_project|open|resolved|all&q=&severity=&environment=&project_id=&sort=opened|severity|title|status&cursor=` (`meta.coverage.counts` gives the tab counts), `POST /tickets`, `PATCH /tickets/{id}` (assign: `{version, project_id}`; assigning starts nothing), `GET /tickets/{id}`, `GET /tickets/{id}/payload`, `POST /tickets/import/pulselab` (body = PulseLab export JSON) |
 | Investigate button | Ticket field `investigate:{available, reason}`. Render disabled with the reason until the orchestrator exists |
+| Code tab: Generate graph | `POST /projects/{id}/graph/index {}` -> 202, one run per bound repository (a second click returns the active run); poll `GET /projects/{id}/graph/index` until `status` leaves `queued/running` (`stage`: resolving, downloading, extracting, indexing; `failed` carries `error.code/message`). Needs the worker (`python -m app.worker_main`) |
+| Architecture: Code graph | `GET /projects/{id}/graph/code?limit=&community=` (published build only; nodes, edges, communities, `truncated`), `GET /projects/{id}/graph/symbols/{symbol_id}` (callers, callees, pinned source chunks with hash). `503 dependency_unavailable` when Neo4j is not configured; `status:"none"` when nothing is indexed |
 | Demo links | `GET /integrations/demo` -> PulseLab/ShopFlow URLs (`configured:false` when blank) |
 | Health | `GET /health/ready` |
 
 ## Not available yet (show empty / unavailable, no fake numbers)
 Home counters and Needs-you queue, Investigate runs/steps/impact/timeline/hypotheses/evidence, Changes & PRs, Observability,
-Analytics, TRACE Bot, Since-you-were-away, usage meters, code graph and architecture map (need Neo4j + indexing).
+Analytics, TRACE Bot, Since-you-were-away, usage meters, the system map and database diagram (the code graph itself is available, see above).
 Nav badges must come from real counts or be hidden (the "2" badges in the current UI are sample numbers).
 
 ## Specific things visible in the current Projects screen that must go
