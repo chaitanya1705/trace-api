@@ -146,3 +146,12 @@ is added to CORS when set. ShopFlow has no TRACE endpoint; its runtime evidence 
 its code through the GitHub connection. Ticket intake (T-010) must accept PulseLab's JSON export shape once that
 export format is published; until then intake is defined by TRACE's own ticket schema.
 
+## 9. POC posture - amendment A8 (2026-10-16)
+
+This is a proof of concept. Security work stays at the baseline already built (encrypted credentials, scoped queries,
+no secrets in responses/logs, signed webhooks) and is not extended. GitHub: **one app** is acceptable; when
+`GITHUB_REMEDIATION_*` is unset, phase-3 draft-PR writes use the single app (`Settings.remediation_app`), granting
+Contents/Pull requests write only when phase 3 starts. Backend-enforced `trace/*` branch naming and approval-hash
+checks remain because they are product behaviour, not hardening. Do not add new hardening tasks (SSRF allowlists,
+KMS, sandbox isolation beyond "unavailable state") unless asked.
+

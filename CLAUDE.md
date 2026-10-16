@@ -45,3 +45,6 @@ Use the Write/Edit tools rather than shell heredocs for multi-line files.
 Done: config/errors/health/migrations, vault, projects/environments/services/members, durable job queue, GitHub+Vercel connections (verify/discover/rotate/disconnect), log scope, repository bindings + mappings, wizard drafts, GitHub webhook. 55 tests pass.
 Next (Postgres-only, no external accounts needed): T-009 ingestion + Vercel drain endpoint + stored log search, T-010 tickets + explicit Investigate (accept PulseLab JSON). Blocked on credentials: T-007 (Neo4j), T-012 (OpenAI), real GitHub App/Vercel smoke tests. Provider tests use labeled fixtures (httpx.MockTransport); say so rather than claiming real-account verification.
 
+## POC posture
+This is a proof of concept: do not add security hardening beyond what exists. One GitHub App is fine (`Settings.remediation_app` falls back to it). See docs/PLAN.md section 9.
+

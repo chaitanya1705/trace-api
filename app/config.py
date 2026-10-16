@@ -150,6 +150,13 @@ class Settings(BaseSettings):
             origins.append(self.pulselab_url)
         return origins
 
+    @property
+    def remediation_app(self) -> tuple[str | None, str | None]:
+        """POC decision: with no separate remediation app configured, draft-PR writes (phase 3) reuse the single app."""
+        if self.github_remediation_app_id and self.github_remediation_private_key:
+            return self.github_remediation_app_id, self.github_remediation_private_key
+        return self.github_app_id, self.github_app_private_key
+
     def capability_report(self) -> dict[str, bool]:
         """Names and on/off only - safe to log at startup."""
         return {
