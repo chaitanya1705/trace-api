@@ -20,6 +20,8 @@ def provider(container):
     base = p.handler
 
     def handler(req):
+        if req.url.host == "api.github.com" and req.url.path == "/app/installations":
+            return httpx.Response(200, json=[{"id": 4821, "account": {"login": "acme", "type": "User"}, "repository_selection": "all", "suspended_at": None}])
         if req.url.host == "api.github.com" and req.url.path == "/app":
             return httpx.Response(200, json={"slug": "traceai-app", "name": "traceai-app", "permissions": p.gh_perms})
         return base(req)
@@ -90,3 +92,18 @@ async def test_callback_rejects_bad_state_and_foreign_installation(client, conta
     assert s.status_code == 422
     s2 = await client.post(f"{API}/connect/github/start", headers=h, json={"draft_id": "00000000-0000-0000-0000-000000000000"})
     assert s2.status_code == 404
+
+
+async def test_already_installed_app_can_be_attached_without_the_redirect(client, container, org, provider):
+    """GitHub does not redirect back when the app is already installed, so TRACE lists installations and attaches one."""
+    h = token_for(org["owner_id"], org["owner_email"])
+    did = (await client.post(f"{API}/project-drafts", headers=h, json={})).json()["data"]["id"]
+    inst = (await client.get(f"{API}/connect/github/installations", headers=h)).json()["data"]
+    assert inst == [{"id": 4821, "account": "acme", "account_type": "User", "repository_selection": "all", "suspended": False}]
+    r = await client.post(f"{API}/connect/github/attach", headers=h, json={"installation_id": 4821, "draft_id": did})
+    assert r.status_code == 200
+    while await worker.run_one(container, "t", ["connection.verify"]):
+        pass
+    conns = (await client.get(f"{API}/project-drafts/{did}/connections", headers=h)).json()["data"]
+    assert conns[0]["status"] == "connected" and conns[0]["config"]["installation_id"] == "4821"
+    assert (await client.post(f"{API}/connect/github/attach", headers=h, json={"installation_id": 4821})).status_code == 422

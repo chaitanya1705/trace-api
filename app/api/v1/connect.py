@@ -99,19 +99,12 @@ async def start(body: StartIn, request: Request, org: OrgContext = Depends(org_c
     return wrap(request, {"url": f"https://github.com/apps/{slug}/installations/new?state={state}", "expires_in": STATE_TTL})
 
 
-@router.get("/connect/github/callback")
-async def callback(
-    request: Request, installation_id: int = Query(...), state: str = Query(...), setup_action: str | None = None,
-    conn: AsyncConnection = Depends(get_conn), c: Container = Depends(get_container),
-):
-    """Public on purpose: the browser arrives from github.com with no token. `state` is the proof of who started this."""
-    st = read_state(c, state)
-    org_id, user_id = UUID(st["org"]), UUID(st["user"])
-    draft_id = UUID(st["draft"]) if st.get("draft") else None
-    project_id = UUID(st["project"]) if st.get("project") else None
+async def bind_installation(conn: AsyncConnection, c: Container, request: Request, *, org_id: UUID, user_id: UUID, draft_id: UUID | None,
+                            project_id: UUID | None, installation_id: int, setup_action: str | None) -> dict:
+    """Confirm with GitHub that the installation belongs to OUR app, then create/reuse the code connection and queue verification."""
     gh, http = await _client(c)
     try:
-        inst = await gh.installation(installation_id)  # proves the installation belongs to OUR app
+        inst = await gh.installation(installation_id)
     except ProviderError as e:
         raise Conflict(f"GitHub did not confirm that installation: {e.message}", code=e.code) from None
     finally:
@@ -135,8 +128,70 @@ async def callback(
                         payload={"connection_id": str(row["id"]), "credential_version": None}, priority=queue.PRIORITY_HUMAN,
                         resource_type="connection", resource_id=row["id"], idempotency_key=f"install:{installation_id}:{row['version']}")
     await conn.commit()
+    return row
+
+
+@router.get("/connect/github/callback")
+async def callback(
+    request: Request, installation_id: int = Query(...), state: str = Query(...), setup_action: str | None = None,
+    conn: AsyncConnection = Depends(get_conn), c: Container = Depends(get_container),
+):
+    """Public on purpose: the browser arrives from github.com with no token. `state` is the proof of who started this."""
+    st = read_state(c, state)
+    draft_id = UUID(st["draft"]) if st.get("draft") else None
+    project_id = UUID(st["project"]) if st.get("project") else None
+    await bind_installation(conn, c, request, org_id=UUID(st["org"]), user_id=UUID(st["user"]), draft_id=draft_id, project_id=project_id,
+                            installation_id=installation_id, setup_action=setup_action)
     origin = web_origin(c)
     if origin:
-        target = f"/projects/new?draft={draft_id}&connected=github" if draft_id else f"/projects/{project_id}?connected=github"
+        target = f"/projects/new/code?draft={draft_id}&connected=github" if draft_id else f"/projects/{project_id}/connectors?connected=github"
         return RedirectResponse(origin + target, status_code=303)
-    return JSONResponse({"connected": "github", "connection_id": str(row["id"])})
+    return JSONResponse({"connected": "github"})
+
+
+class Installation(BaseModel):
+    id: int
+    account: str | None
+    account_type: str | None
+    repository_selection: str | None
+    suspended: bool
+
+
+@router.get("/connect/github/installations")
+async def list_installations(request: Request, _: OrgContext = Depends(org_context), c: Container = Depends(get_container)):
+    """Existing installations of TRACE's GitHub App, for when the app is already installed (GitHub then does not redirect back).
+    POC single-tenant behaviour: every installation of this app is listed. A multi-tenant deployment must not do this."""
+    gh, http = await _client(c)
+    try:
+        items = await gh.list_installations()
+    except ProviderError as e:
+        raise DependencyUnavailable(e.message, code=e.code) from None
+    finally:
+        await http.aclose()
+    out = [Installation(id=i["id"], account=(i.get("account") or {}).get("login"), account_type=(i.get("account") or {}).get("type"),
+                        repository_selection=i.get("repository_selection"), suspended=bool(i.get("suspended_at"))).model_dump() for i in items]
+    return wrap(request, out)
+
+
+class AttachIn(BaseModel):
+    installation_id: int
+    draft_id: UUID | None = None
+    project_id: UUID | None = None
+
+
+@router.post("/connect/github/attach")
+async def attach(body: AttachIn, request: Request, org: OrgContext = Depends(org_context), conn: AsyncConnection = Depends(get_conn),
+                 c: Container = Depends(get_container)):
+    """Use an existing installation without leaving TRACE."""
+    if bool(body.draft_id) == bool(body.project_id):
+        raise Unprocessable("Send exactly one of draft_id or project_id")
+    if body.project_id:
+        (await load_project_context(conn, org, body.project_id)).require(Cap.MANAGE_CONNECTIONS)
+    else:
+        row = await (await conn.execute("SELECT created_by FROM project_drafts WHERE id=%s AND organization_id=%s AND status='open'",
+                                        (body.draft_id, org.organization_id))).fetchone()
+        if row is None or (row["created_by"] != org.principal.user_id and not org.is_org_admin):
+            raise NotFound("Draft not found")
+    row = await bind_installation(conn, c, request, org_id=org.organization_id, user_id=org.principal.user_id, draft_id=body.draft_id,
+                                  project_id=body.project_id, installation_id=body.installation_id, setup_action="attach")
+    return wrap(request, {"connection_id": row["id"], "status": row["status"]})
