@@ -15,7 +15,7 @@ from app.audit import audit
 from app.auth.authz import can_invite_role
 from app.auth.deps import current_principal, get_conn
 from app.auth.jwt import Principal
-from app.envelope import wrap
+from app.envelope import Envelope, wrap
 from app.errors import Conflict, Forbidden, NotFound, Unprocessable
 
 router = APIRouter(tags=["identity"])
@@ -28,6 +28,41 @@ class InviteIn(BaseModel):
     role: Role
 
 
+class MembershipOut(BaseModel):
+    organization_id: UUID
+    organization_name: str
+    role: str
+
+
+class UserOut(BaseModel):
+    id: UUID
+    email: str | None
+    display_name: str | None
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    memberships: list[MembershipOut]
+
+
+class InvitationCreated(BaseModel):
+    id: UUID
+    email: str
+    role: str
+    expires_at: datetime
+    token: str  # one-time; shown once, only its hash is stored
+
+
+class InvitationState(BaseModel):
+    id: UUID
+    status: str
+
+
+class AcceptedOut(BaseModel):
+    organization_id: UUID
+    role: str
+
+
 class AcceptIn(BaseModel):
     token: str = Field(min_length=20, max_length=200)
 
@@ -36,7 +71,7 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-@router.get("/me")
+@router.get("/me", response_model=Envelope[MeOut])
 async def me(request: Request, p: Principal = Depends(current_principal), conn: AsyncConnection = Depends(get_conn)):
     rows = await (
         await conn.execute(
@@ -72,7 +107,7 @@ async def _org_admin(conn: AsyncConnection, org_id: UUID, user_id: UUID) -> str:
     return row["role"]
 
 
-@router.post("/organizations/{org_id}/invitations", status_code=201)
+@router.post("/organizations/{org_id}/invitations", status_code=201, response_model=Envelope[InvitationCreated])
 async def create_invitation(
     org_id: UUID,
     body: InviteIn,
@@ -105,7 +140,7 @@ async def create_invitation(
     return wrap(request, {**row, "token": token})
 
 
-@router.post("/organizations/{org_id}/invitations/{invitation_id}/revoke")
+@router.post("/organizations/{org_id}/invitations/{invitation_id}/revoke", response_model=Envelope[InvitationState])
 async def revoke_invitation(
     org_id: UUID,
     invitation_id: UUID,
@@ -129,7 +164,7 @@ async def revoke_invitation(
     return wrap(request, {"id": invitation_id, "status": "revoked"})
 
 
-@router.post("/invitations/accept")
+@router.post("/invitations/accept", response_model=Envelope[AcceptedOut])
 async def accept_invitation(
     body: AcceptIn,
     request: Request,

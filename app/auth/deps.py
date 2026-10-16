@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import Depends, Request
 from psycopg import AsyncConnection
 
-from app.auth.authz import ORG_ADMIN_ROLES, Cap, effective_caps
+from app.auth.authz import ORG_ADMIN_ROLES, Cap, effective_caps, project_level_caps
 from app.auth.jwt import Principal
 from app.container import Container
 from app.errors import DependencyUnavailable, Forbidden, NotFound, Unauthenticated
@@ -106,10 +106,9 @@ async def load_project_context(
             (project_id, org.principal.user_id),
         )
     ).fetchall()
-    caps = effective_caps(
-        [(g["role"], None if g["environment_ids"] is None else [str(e) for e in g["environment_ids"]]) for g in grants],
-        environment_id,
-    )
+    parsed = [(g["role"], None if g["environment_ids"] is None else [str(e) for e in g["environment_ids"]])
+              for g in grants]
+    caps = effective_caps(parsed, environment_id) if environment_id else project_level_caps(parsed)
     if Cap.READ not in caps:
         raise NotFound("Project not found")
     return ProjectContext(org, project_id, caps)

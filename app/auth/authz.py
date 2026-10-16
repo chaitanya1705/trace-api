@@ -60,6 +60,15 @@ def effective_caps(grants: Iterable[tuple[str, list[str] | None]], environment_i
     return caps_for(role for role, envs in grants if environment_allowed(envs, environment_id))
 
 
+def project_level_caps(grants: Iterable[tuple[str, list[str] | None]]) -> frozenset[Cap]:
+    """Project-wide view: capabilities from unrestricted grants only, plus READ for any grant at all.
+    An environment-limited grant lets the holder see the project shell (names, environments they hold) but its
+    investigate/approve/etc. capabilities apply only when an environment is supplied (effective_caps)."""
+    grants = list(grants)
+    caps = effective_caps(grants, None)
+    return caps | {Cap.READ} if grants else caps
+
+
 def can_invite_role(actor_org_role: str, target_role: str) -> bool:
     """Owners may grant anything; Admins may not mint Owners."""
     if actor_org_role == "owner":

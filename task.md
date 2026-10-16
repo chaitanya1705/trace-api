@@ -1,6 +1,6 @@
 # TRACE implementation backlog and validation record
 
-Version 1.0 · 12 October 2026. Implementation tasks below are NOT STARTED. Documentation drafting/audit is distinct from implemented/tested software. Coding agent owns status updates.
+Version 1.0 · 12 October 2026 (backend progress updated 2026-10-16). Task statuses below are authoritative; tasks without a progress-log entry are NOT STARTED. Documentation drafting/audit is distinct from implemented/tested software. Coding agent owns status updates.
 
 ## Workflow
 
@@ -13,12 +13,12 @@ Dependencies: none. Requirements: all architecture foundations.
 Deliver: lock tested Python/Node/Next.js/FastAPI/Neo4j/OpenAI SDK/Graphify versions; verify chosen model availability; validate Graphify CLI/output schema on Python+TypeScript fixtures; check hosting memory/process/SSE support, provisioned database capabilities and backup limits. Record exact official provider docs/version/date for active integrations. Validate Graphify redistribution notices for shipped dependencies. No token-saving/performance claim adopted without local measurement.
 Acceptance: reproducible local build; real Graphify sample yields expected identities/edges/source locators; tested version matrix; incompatible capability fails visibly. Blocks enabling providers until their own spike passes.
 
-### T-002 · Backend/web repositories, CI and contracts · TODO
+### T-002 · Backend/web repositories, CI and contracts · IN_PROGRESS (backend half)
 Dependencies: T-001. Requirements: R-002, architecture A3/A5.
 Deliver: two repo layouts, config validation, secret-free env examples, lint/typecheck/test commands, migrations, OpenAPI→TS generation and CI drift check. Add correlation IDs, safe error envelope, live/ready health.
 Acceptance: clean checkout installs locked versions; invalid config fails with field name only; frontend compiles generated types; CI runs meaningful checks.
 
-### T-003 · Auth, membership, role policy and audit · TODO
+### T-003 · Auth, membership, role policy and audit · IN_PROGRESS
 Dependencies: T-002. Requirements: R-001,R-019.
 Deliver: sign-in/signup/reset/session handling, invitation/membership flow, project grants, JWT verification, server authz, RLS, audit and own-preferences endpoints. Owner/Admin/Approver/Investigator/Viewer permissions tested independently. Audit export restricted.
 Acceptance: unauthorized/cross-project/revoked tests; login deep link return; secret-free logs; Admin privilege not confused with independent patch approval.
@@ -28,7 +28,7 @@ Dependencies: T-003. Requirements: R-001,R-002,R-020.
 Deliver: final prototype navigation, breadcrumbs/scope/command palette, theme, mobile drawer, stable routes, query cache, local table scroll and empty/error components. Landing truthful sample labels.
 Acceptance: keyboard/reduced-motion and 1440/1024/768/390/320px browser checks; no whole-page overflow; scope change clears unauthorized cached data.
 
-### T-005 · Projects, wizard and domain scope · TODO
+### T-005 · Projects, wizard and domain scope · IN_PROGRESS
 Dependencies: T-003,T-004. Requirements: R-015,R-019.
 Deliver: project list/detail/team, draft wizard in prototype order, unique names, owner/envs, repository-service mappings, ready-by-capability checklist, review/edit/resume and future-provider disabled states. Mirror non-secret scope via outbox.
 Acceptance: skip/resume persists; project name race conflict; one-repo-many-services support; membership enforcement.
@@ -153,8 +153,19 @@ Implementation gates still requiring actual environment verification: pinned dep
 
 Final five-document review completed 12 October 2026 by an independent validation agent. Static source inspection covered final navigation and active V3–V17 functions/overrides, compared 28 coverage families with R-001–R-020 and T-001–T-024, and reviewed architecture/ontology boundaries. Corrections added provider-specific setup parity and capability gating, separate GitHub remediation credentials, safe provider URL handling, precise abstention denominators, and canonical bot entity names. Explicit Investigate, Neo4j-only retrieval, immutable revisions, approval invalidation and deployment-based recovery remain consistent. Limitations: no browser interaction, provider account/API validation, package compatibility execution, Cypher integration execution or working-application tests were performed in this document audit; these remain implementation gates. The earlier T-4 text match was within GPT-4o, not an undefined task reference.
 
+## Amendments by user decision (2026-10-16)
+
+Recorded in full in `docs/PLAN.md` section 1. Summary and task impact:
+- Repos are `trace-api` (Python) and `trace-web` (Next.js).
+- Settings is dropped for now (rules/approvers/members/roles/audit UI/credentials page/preferences/notifications). Backend keeps internal defaults only. Affects T-003 (no preferences endpoints), T-017 (no settings UI; default policies, no edit UI), T-023 (preferences, notification delivery, on-call removed; reviews/analytics/usage meters kept).
+- Connectors limited to **Vercel (hosting) and GitHub (code)** plus generic webhook/upload. T-021 subtasks a, b, c, e, f, g, h, i, j are **CANCELLED**; d (Vercel) is promoted into P1/P2/P3 work and T-021 becomes hardening of the two adapters. The wizard has no Tickets step; tickets enter by manual form/API/webhook; the required change ticket is a manually linked external reference. The minimal Jira writer in T-018 is **CANCELLED**.
+- Local toolchain is Python 3.11 (spec said 3.12): `requires-python >=3.11`.
+
 ## Agent progress log
 
 | Date | Task | Status | Evidence / next action |
 |---|---|---|---|
 | 2026-10-12 | Specification | Reviewed | Five TRACE-only documents; implementation not started; next T-001 after document handoff |
+| 2026-10-16 | Plan | Done | `docs/PLAN.md`: prototype reverse-engineered (landing, wizard, tickets, run state machine, bot, changes, observability), scope amendments, task map. |
+| 2026-10-16 | T-002 (backend), T-003, T-005 (part) | IN_PROGRESS | Built: FastAPI app factory, validated config (field names only in errors), request-id middleware, safe error envelope, live/ready health, forward-only SQL migrator with checksums, migration 0001 (identity, projects, environments, services, connections, credential_versions, repo bindings, path mappings, log scope, drafts, jobs, outbox, audit append-only trigger, RLS on without policies), AES-256-GCM vault with AAD binding and key rotation, Supabase JWT verifier (RS256/ES256, iss/aud/exp), pure authz rules (roles are not a ladder; env-scoped grants), `/me`, invitation create/revoke/accept (single-use, email-bound, generic failure message), projects list/create/detail/patch (optimistic version, case-insensitive unique name, race-safe), environments/services PUT with stable IDs, project members PUT (>=1 admin, org-member and env checks), outbox scope projection, capability-specific readiness, typed OpenAPI (`docs/openapi.json`, `python -m app.openapi_export --check`). Checks: `pytest` 24 passed (unit + DB tests on an embedded throwaway Postgres via `pgserver`), `ruff check` clean. **Not done / limits**: no real Supabase JWKS verification run (FakeVerifier in tests only; verifier code unexercised against a live issuer); no CI workflow yet; project drafts/wizard, audit read endpoint, project repository bindings and path mappings, JWT-expiry tests; Docker/Neo4j/Supabase/OpenAI not provisioned. Next: T-006 (jobs/leases, GitHub + Vercel connections), then drafts (needs connections to allow draft-scoped rows). |
+

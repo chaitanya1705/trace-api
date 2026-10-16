@@ -70,6 +70,16 @@ async def client(container, settings):
         yield c
 
 
+async def add_member(container, org_id, role="investigator", email=None):
+    uid = uuid.uuid4()
+    email = email or f"u-{uid.hex[:6]}@example.com"
+    async with container.pool.connection() as conn:
+        await conn.execute("INSERT INTO memberships(organization_id,user_id,email,role) VALUES (%s,%s,%s,%s)",
+                           (org_id, uid, email, role))
+        await conn.commit()
+    return uid, email
+
+
 @pytest_asyncio.fixture
 async def org(container):
     """A fresh organization with an owner, an admin-less world otherwise."""
