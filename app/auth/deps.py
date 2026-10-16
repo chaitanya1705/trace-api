@@ -13,14 +13,14 @@ from app.container import Container
 from app.errors import DependencyUnavailable, Forbidden, NotFound, Unauthenticated
 
 
-def get_container(request: Request) -> Container:
+async def get_container(request: Request) -> Container:
     return request.app.state.container
 
 
 async def get_conn(request: Request):
     """Pooled connection per request. Command handlers commit explicitly *before* returning, so a client never
     observes a response for a write that has not committed; anything uncommitted is rolled back on release."""
-    c = get_container(request)
+    c: Container = request.app.state.container
     if c.pool is None:
         raise DependencyUnavailable("Database is not configured")
     async with c.pool.connection() as conn:

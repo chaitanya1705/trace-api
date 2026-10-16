@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1.router import api_router
 from app.api.v1.health import health_router
+from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.container import Container
 from app.errors import install_error_handlers
@@ -63,6 +63,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         docs_url="/docs" if settings.trace_env != "production" else None,
         redoc_url=None,
     )
+    if container is not None:
+        app.state.container = container  # injected (tests); lifespan keeps it and does not close it
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
