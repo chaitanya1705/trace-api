@@ -318,6 +318,22 @@
         "title": "Envelope[ProjectSummary]",
         "type": "object"
       },
+      "Envelope_PublicConfig_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PublicConfig"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[PublicConfig]",
+        "type": "object"
+      },
       "Envelope_list_EnvironmentOut__": {
         "properties": {
           "data": {
@@ -1088,6 +1104,19 @@
         "title": "ProjectSummary",
         "type": "object"
       },
+      "PublicConfig": {
+        "properties": {
+          "auth_mode": {
+            "title": "Auth Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth_mode"
+        ],
+        "title": "PublicConfig",
+        "type": "object"
+      },
       "ReadinessItem": {
         "properties": {
           "detail": {
@@ -1398,6 +1427,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/config": {
+      "get": {
+        "description": "Unauthenticated, non-secret. The landing page's 'Open workspace' goes straight in when auth_mode is 'off'.",
+        "operationId": "public_config_api_v1_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_PublicConfig_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Public Config",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/api/v1/connections/{connection_id}": {
       "get": {
         "operationId": "get_connection_api_v1_connections__connection_id__get",

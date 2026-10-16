@@ -23,3 +23,12 @@ def test_off_is_rejected_in_production():
     with pytest.raises(ValueError, match="not allowed in production"):
         Settings(trace_env="production", auth_mode="off", database_url="d", supabase_url="s", supabase_jwks_url="j",
                  neo4j_uri="n", neo4j_username="u", neo4j_password="p", openai_api_key="k", trace_secret_key="A" * 43)
+
+
+async def test_open_workspace_flow_without_any_login(container):
+    s = Settings(trace_env="development", auth_mode="off")
+    app = create_app(s, Container(settings=s, pool=container.pool))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/api/v1/config")).json()["data"]["auth_mode"] == "off"
+        me = (await c.get("/api/v1/me")).json()["data"]          # no token: still a usable account
+        assert me["user"]["email"] == "dev@trace.local" and me["memberships"][0]["organization_name"] == "Dev Org"

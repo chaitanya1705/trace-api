@@ -71,8 +71,24 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+class PublicConfig(BaseModel):
+    auth_mode: str  # 'off' => the web app should skip login and open the workspace directly
+
+
+@router.get("/config", response_model=Envelope[PublicConfig])
+async def public_config(request: Request):
+    """Unauthenticated, non-secret. The landing page's 'Open workspace' goes straight in when auth_mode is 'off'."""
+    return wrap(request, {"auth_mode": request.app.state.container.settings.auth_mode})
+
+
 @router.get("/me", response_model=Envelope[MeOut])
 async def me(request: Request, p: Principal = Depends(current_principal), conn: AsyncConnection = Depends(get_conn)):
+    if request.app.state.container.settings.auth_mode == "off":
+        from app.auth.deps import _dev_membership  # no-login dev mode: first visit joins/creates the Dev Org
+
+        has = await (await conn.execute("SELECT 1 FROM memberships WHERE user_id=%s AND status='active' LIMIT 1", (p.user_id,))).fetchone()
+        if not has:
+            await _dev_membership(conn, p)
     rows = await (
         await conn.execute(
             "SELECT m.id, m.organization_id, o.name AS organization_name, m.role FROM memberships m"
