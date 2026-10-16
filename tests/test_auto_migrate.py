@@ -3,6 +3,7 @@ import pytest
 
 from app.config import Settings
 from app.main import build_container, close_container
+from app.storage.postgres.migrate import discover
 
 pytestmark = pytest.mark.db
 
@@ -19,7 +20,7 @@ async def test_startup_creates_schema_on_a_fresh_database_and_is_idempotent(pg_d
                 n = (await (await conn.execute("SELECT count(*) AS n FROM schema_migrations")).fetchone())["n"]
                 await (await conn.execute("SELECT 1 FROM projects LIMIT 1")).fetchall()
             await close_container(c)
-            assert n == 2
+            assert n == len(discover())  # every shipped migration, however many there are
         off = await build_container(Settings(trace_env="test", database_url=fresh, auto_migrate=False))
         await close_container(off)
     finally:

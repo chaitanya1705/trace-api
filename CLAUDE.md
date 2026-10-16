@@ -48,3 +48,10 @@ Next (Postgres-only, no external accounts needed): T-009 ingestion + Vercel drai
 ## POC posture
 This is a proof of concept: do not add security hardening beyond what exists. One GitHub App is fine (`Settings.remediation_app` falls back to it). See docs/PLAN.md section 9.
 
+## No mock data (user rule)
+The backend has no seeded/mock data and must never add any (test fixtures live only under tests/ and are labeled). When a
+screen's API lands here, the matching screen in trace-web must drop its mock data in the same change: Tickets is ready now
+(`GET/POST/PATCH /tickets`, `POST /tickets/import/pulselab`); Projects, connections, wizard drafts, log scope, repositories
+are ready too. Screens whose API does not exist yet (Investigate, Changes, Observability, Home counters) should show an
+honest empty/unavailable state, not invented numbers.
+
