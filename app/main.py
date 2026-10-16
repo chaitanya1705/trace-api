@@ -92,6 +92,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
+        # development only: any localhost/127.0.0.1 port (the web app may run on 3000, 3001, 127.0.0.1, ...)
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$" if settings.trace_env != "production" else None,
         allow_credentials=False,  # bearer tokens in the Authorization header, never cookies
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["authorization", "content-type", "idempotency-key", "x-organization-id", "x-request-id",

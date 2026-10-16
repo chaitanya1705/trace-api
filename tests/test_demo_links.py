@@ -33,3 +33,12 @@ def test_private_key_can_be_read_from_file(tmp_path):
     assert s.github_app_private_key.startswith("-----BEGIN")
     with pytest.raises(ValueError, match="not readable"):
         Settings(trace_env="test", github_app_private_key_path=str(tmp_path / "missing.pem"))
+
+
+async def test_dev_cors_allows_any_localhost_port_but_not_other_sites(client):
+    async def allowed(origin):
+        r = await client.options("/api/v1/config", headers={"origin": origin, "access-control-request-method": "GET"})
+        return r.headers.get("access-control-allow-origin") == origin
+
+    assert await allowed("http://127.0.0.1:3001") and await allowed("http://localhost:4000")
+    assert not await allowed("https://evil.example.com")
