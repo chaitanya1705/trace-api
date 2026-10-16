@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from app.api.v1 import identity, projects
+from app.api.v1 import connections, drafts, identity, projects, scope, webhooks
 
 api_router = APIRouter()
-api_router.include_router(identity.router)
-api_router.include_router(projects.router)
+for r in (identity, projects, connections, scope, drafts, webhooks):
+    api_router.include_router(r.router)

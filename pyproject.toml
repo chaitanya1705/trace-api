@@ -32,7 +32,7 @@ testpaths = ["tests"]
 markers = ["db: needs a reachable Postgres (TEST_DATABASE_URL)"]
 
 [tool.ruff]
-line-length = 140
+line-length = 170
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -43,3 +43,6 @@ ignore = ["B008"]  # FastAPI Depends() defaults are the framework idiom
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
