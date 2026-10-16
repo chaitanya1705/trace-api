@@ -49,7 +49,7 @@ async def main(installation_id: str) -> int:
             for st in (await api.get(f"/api/v1/connections/{cid}/checks")).json()["data"][0]["stages"]:
                 print(f"  [{st['status']:>4}] {st['title']}: {st['message']}")
             res = (await api.get(f"/api/v1/connections/{cid}/resources")).json()
-            print("repositories:", [x["full_name"] for x in res["data"]][:30], res["meta"]["coverage"])
+            print("repositories:", [x["full_name"] for x in res["data"]][:200], res["meta"]["coverage"])
         await c.pool.close()
         return 0 if conn["status"].startswith("connected") else 1
     finally:
