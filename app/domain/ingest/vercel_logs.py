@@ -117,3 +117,45 @@ def normalize(rec: Any) -> LogRow | None:
         env_key=str(env).strip().lower() if env else None,
         extra=extra,
     )
+
+
+def structured(msg: str | None) -> dict[str, Any]:
+    """Apps that log JSON (like ShopFlow's diagnostics) keep their fields; plain text returns {}. Values are already redacted text."""
+    if not msg or not msg.lstrip().startswith("{"):
+        return {}
+    try:
+        d = json.loads(msg)
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def normalize_runtime(rec: Any, *, deployment_id: str, provider_project_id: str, env_key: str | None) -> LogRow | None:
+    """Row from the runtime-logs endpoint ({level,message,rowId,source,timestampInMs,requestMethod,requestPath,responseStatusCode,domain})."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("message"), str):
+        return None
+    raw = rec["message"]
+    truncated = bool(rec.get("messageTruncated"))
+    msg = redact_text(raw)
+    if len(msg) > MAX_MESSAGE:
+        msg, truncated = msg[:MAX_MESSAGE], True
+    st = structured(msg)
+    key = str(st.get("event_id") or hashlib.sha256(f"{deployment_id}|{rec.get('rowId')}|{msg}".encode()).hexdigest()[:40])
+    sc = rec.get("responseStatusCode")
+    level = {"warning": "warning", "error": "error", "fatal": "fatal", "info": "info"}.get(str(rec.get("level")))
+    extra = {k: st[k] for k in ("operation", "event_name", "run_id", "component_id", "error_type", "duration_ms", "source_revision") if st.get(k) is not None}
+    for k in ("requestMethod", "domain"):
+        if rec.get(k):
+            extra[k] = rec[k]
+    if truncated:
+        extra["message_truncated"] = True
+    et = _ts(rec.get("timestampInMs"))
+    shown = st.get("message") if isinstance(st.get("message"), str) else None
+    return LogRow(
+        source_record_key=key, event_time=et, level=level or ({"ERROR": "error", "WARNING": "warning", "INFO": "info"}.get(str(st.get("level")).upper())),
+        source=rec.get("source") if isinstance(rec.get("source"), str) else None, provider_project_id=provider_project_id, deployment_id=deployment_id,
+        request_id=st.get("request_id") if isinstance(st.get("request_id"), str) else None,
+        status_code=sc if isinstance(sc, int) and not isinstance(sc, bool) and sc >= 0 else None,
+        service_hint=(str(rec.get("requestPath") or st.get("operation") or "")[:300] or None), message=shown or msg,
+        content_hash=hashlib.sha256(json.dumps({"k": key, "ts": rec.get("timestampInMs"), "m": msg}, sort_keys=True).encode()).hexdigest(), env_key=env_key, extra=extra,
+    )

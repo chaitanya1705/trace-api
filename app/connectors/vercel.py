@@ -68,6 +68,38 @@ class VercelClient:
         return body.get("deployments", []), (body.get("pagination") or {}).get("next")
 
 
+async def tail_runtime_logs(client: VercelClient, project_id: str, deployment_id: str, *, seconds: float, max_lines: int = 2000):
+    """Live tail of a deployment's runtime logs for at most `seconds` (the endpoint only emits lines logged while connected; history comes
+    from a log drain). Yields parsed JSON objects. Bounded by time and line count so it can never run away."""
+    import asyncio
+    import json as _json
+
+    params = {"teamId": client.team_id} if client.team_id else {}
+    url = f"{API}/v1/projects/{project_id}/deployments/{deployment_id}/runtime-logs"
+    n = 0
+    try:
+        async with asyncio.timeout(seconds):
+            async with client.http.stream("GET", url, headers={"authorization": f"Bearer {client.token}"}, params=params, timeout=httpx.Timeout(10.0, read=None)) as r:
+                if r.status_code >= 400:
+                    await r.aread()
+                    raise_for_status(r, "Read runtime logs")
+                async for line in r.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield _json.loads(line)
+                    except ValueError:
+                        continue
+                    n += 1
+                    if n >= max_lines:
+                        return
+    except TimeoutError:
+        return  # the capture window ended normally
+    except httpx.HTTPError:
+        raise ProviderError("provider_unavailable", "Runtime log stream failed", retryable=True) from None
+
+
 def project_view(p: dict) -> dict[str, Any]:
     link = p.get("link") or {}
     return {

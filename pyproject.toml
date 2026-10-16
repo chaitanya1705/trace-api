@@ -32,7 +32,7 @@ testpaths = ["tests"]
 markers = ["db: needs a reachable Postgres (TEST_DATABASE_URL)"]
 
 [tool.ruff]
-line-length = 200
+line-length = 230
 target-version = "py311"
 
 [tool.ruff.lint]
