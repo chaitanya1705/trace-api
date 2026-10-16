@@ -6,51 +6,19 @@ instance. Normal `pytest` runs never touch Neo4j.
 from __future__ import annotations
 
 import os
-import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
-from dotenv import dotenv_values
 
 from app.graph import identity as I
 from app.graph.migrate import apply_migrations
 from app.graph.queries import run_template
 from app.graph.repository import GraphRepository, GraphWriteError, prepare_node, prepare_rel
+from tests.conftest import _creds
 
 pytestmark = pytest.mark.skipif(os.environ.get("TRACE_TEST_NEO4J") != "1", reason="set TRACE_TEST_NEO4J=1 to run against Neo4j")
 
 T0 = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
-
-
-def _creds():
-    env = {**dotenv_values(Path(__file__).resolve().parents[1] / ".env"), **os.environ}
-    pick = lambda k: env.get("TEST_" + k) or env.get(k)  # noqa: E731
-    return pick("NEO4J_URI"), pick("NEO4J_USERNAME"), pick("NEO4J_PASSWORD"), pick("NEO4J_DATABASE") or "neo4j"
-
-
-@pytest.fixture(scope="module")
-def driver():
-    from neo4j import GraphDatabase
-
-    uri, user, pw, _ = _creds()
-    d = GraphDatabase.driver(uri, auth=(user, pw))
-    d.verify_connectivity()
-    apply_migrations(d, _creds()[3])
-    yield d
-    d.close()
-
-
-@pytest.fixture
-def repo(driver):
-    return GraphRepository(driver, _creds()[3])
-
-
-@pytest.fixture
-def pid(repo):
-    p = "itest-" + uuid.uuid4().hex[:10]
-    yield p
-    repo.delete_project(p)
 
 
 def _build(repo: GraphRepository, p: str) -> dict[str, str]:

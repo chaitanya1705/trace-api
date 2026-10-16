@@ -224,6 +224,21 @@ class GraphRepository:
         ok = self.citable_ids(project_id, retrieval_manifest_id)
         return [c for c in cited_ids if c not in ok]
 
+
+    # ---- retrieval manifests (O8) ------------------------------------------------------------------------------
+    def record_retrieval(self, project_id: str, run_id: str, execution_id: str, item_ids: list[str], *, cutoff, query_template: str, truncated: bool, gaps: list[dict] | None = None) -> str:
+        """Persist exactly what a tool returned so later citations can be validated against it (and replay needs no new query)."""
+        from app.graph.identity import canonical_digest, canonical_json, entity_id
+
+        items = sorted(set(item_ids))
+        h = canonical_digest("retrieval", run_id, execution_id, canonical_json(items), query_template)
+        rid = entity_id("RetrievalManifest", project_id, run_id, execution_id, h)
+        self.write_nodes([prepare_node("RetrievalManifest", rid, project_id, {
+            "run_id": run_id, "execution_id": execution_id, "item_ids_json": canonical_json(items), "hash": h, "cutoff": cutoff,
+            "query_template": query_template, "truncated": truncated, "gaps_json": canonical_json(gaps or []),
+        })])
+        return rid
+
     # ---- maintenance ------------------------------------------------------------------------------------------
     def delete_project(self, project_id: str, batch: int = 5000) -> int:
         """Remove every node of one project (disconnect/retention). Returns the number of nodes deleted."""

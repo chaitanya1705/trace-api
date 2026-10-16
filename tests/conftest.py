@@ -97,3 +97,44 @@ async def org(container):
         )
         await conn.commit()
     return {"id": row["id"], "owner_id": owner_id, "owner_email": f"owner-{owner_id.hex[:6]}@example.com"}
+
+
+# ---- Neo4j integration fixtures (opt-in: TRACE_TEST_NEO4J=1; never used by default runs) ---------------------------
+import os  # noqa: E402
+
+from dotenv import dotenv_values  # noqa: E402
+
+from app.graph.migrate import apply_migrations  # noqa: E402
+from app.graph.repository import GraphRepository  # noqa: E402
+
+
+def _creds():
+    env = {**dotenv_values(Path(__file__).resolve().parents[1] / ".env"), **os.environ}
+    pick = lambda k: env.get("TEST_" + k) or env.get(k)  # noqa: E731
+    return pick("NEO4J_URI"), pick("NEO4J_USERNAME"), pick("NEO4J_PASSWORD"), pick("NEO4J_DATABASE") or "neo4j"
+
+
+@pytest.fixture(scope="session")
+def driver():
+    from neo4j import GraphDatabase
+
+    uri, user, pw, _ = _creds()
+    d = GraphDatabase.driver(uri, auth=(user, pw))
+    d.verify_connectivity()
+    apply_migrations(d, _creds()[3])
+    yield d
+    d.close()
+
+
+@pytest.fixture
+def repo(driver):
+    return GraphRepository(driver, _creds()[3])
+
+
+@pytest.fixture
+def pid(repo):
+    p = "itest-" + uuid.uuid4().hex[:10]
+    yield p
+    repo.delete_project(p)
+
+

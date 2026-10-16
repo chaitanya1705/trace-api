@@ -3168,6 +3168,128 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/graph/code": {
+      "get": {
+        "description": "Published code graph (symbols and structural relationships). Structure only: static reachability is never runtime proof.",
+        "operationId": "code_graph_api_v1_projects__project_id__graph_code_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 400,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "community",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Community"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Graph",
+        "tags": [
+          "graph"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/graph/symbols/{symbol_id}": {
+      "get": {
+        "description": "One symbol with its callers, callees and the exact pinned source chunks (content hash included).",
+        "operationId": "symbol_detail_api_v1_projects__project_id__graph_symbols__symbol_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol_id",
+            "required": true,
+            "schema": {
+              "title": "Symbol Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Symbol Detail",
+        "tags": [
+          "graph"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/log-scope": {
       "get": {
         "operationId": "get_log_scope_api_v1_projects__project_id__log_scope_get",

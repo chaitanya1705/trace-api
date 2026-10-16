@@ -30,15 +30,23 @@ Audited 2026-10-17 against a live Neo4j Aura instance. "Enforced" means a test f
 - No contradiction, potential-exposure or dependency-validity templates.
 - No citation check against the retrieval manifest.
 
-## Still open (belongs to a later task, not a defect of the ontology layer)
+## Closed in the second pass (2026-10-17)
+| Gap | Now |
+|---|---|
+| Graphify output normaliser | `app/graph/extract.py` (`Extractor` protocol; built-in ast/regex implementation, honest about inferred vs resolved vs ambiguous) and `app/graph/indexer.py` (stage, validate counts, publish, manifest). A Graphify adapter can replace the extractor later. |
+| Full-text search with scope filter and truncation | `source_text_search` template, `escape_lucene`, `run_bounded` returns `truncated` |
+| 100 node / 200 edge expansion ceiling | `MAX_NODES` enforced for expansion templates |
+| RetrievalManifest builder | `GraphRepository.record_retrieval` (idempotent, query template recorded) |
+| O12 fixtures | ambiguous call, same-file resolution, partial parse, unsupported language, cycle, reverse-direction blast, failed rebuild, cross-project paths, full-text isolation + truncation, overlapping deployments, conflicting sources, retrieval manifest |
+| Read path for the app | `GET /projects/{id}/graph/code` and `/graph/symbols/{symbol}` (membership-checked, published build only, bounded), shown in trace-web at `/graph` |
+
+## Still open
 | Gap | Spec | Task |
 |---|---|---|
-| Graphify output → nodes/edges normaliser, unmapped-type diagnostics, partial-coverage counts | O7 | T-007 |
-| Full-text candidate template with scope filtering and pagination/truncation gaps; ranking, dedupe by event hash, diversity | O8, O9 | T-011 |
-| RetrievalManifest builder and truncation/gap recording at query time | O8 | T-011 |
-| Max 100 nodes / 200 edges per expansion (only `limit ≤ 200` is enforced today) | O8 | T-011 |
-| Postgres outbox → graph applier with receipts and reconciliation | architecture A2 | T-006 |
-| Late-evidence rule: new assessment/continuation only, never rewriting a historical step | O6 | T-012 |
-| Historical replay without model calls | O6 | T-012 |
-| O12 fixtures not yet written: overlapping deployments, late/out-of-order events, Graphify ambiguous edge, partial language parse, reverse-direction blast, cycles, conflicting sources, source path mapping, insufficient recovery traffic, full-text isolation | O12 | T-007 / T-011 |
-| Retention and backup behaviour (access removal not granting access to backups) | O12 | T-024 |
+| Real Graphify adapter and output schema validation (the built-in extractor is a stand-in; TypeScript parsing is regex-based, so nested/complex syntax can be missed) | O7 | T-001 / T-007 |
+| Safe checkout of a GitHub repository at a SHA (today the indexer reads a local directory) | R-017 | T-007 |
+| Postgres outbox -> graph applier with receipts and reconciliation; project/service/environment nodes are not yet mirrored from the control plane | A2 | T-006 |
+| Ranking, event-hash dedupe and diversity across retrieved items | O8 | T-011 |
+| Late-evidence rule and replay without model calls | O6 | T-012 |
+| Fixtures not yet written: late/out-of-order ingest through the real ingestion path, source path mapping from stack traces, insufficient recovery traffic | O12 | T-009 / T-019 |
+| Retention and backup behaviour | O12 | T-024 |

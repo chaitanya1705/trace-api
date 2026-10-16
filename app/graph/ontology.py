@@ -88,7 +88,7 @@ NODES: dict[str, NodeSpec] = {
         NodeSpec("InvestigationRun", ("control_run_id", "environment_id", "window_start", "window_end", "evidence_cutoff", "status"), ("manifest_id",), doc="immutable run scope"),
         NodeSpec("Step", ("run_id", "sequence", "kind", "status", "started_at"), ("finished_at",), doc="persisted execution progression"),
         NodeSpec("ToolExecution", ("run_id", "step_id", "tool_name", "input_hash", "query_version", "status", "coverage_json"), doc="manifests, not raw arguments"),
-        NodeSpec("RetrievalManifest", ("run_id", "execution_id", "item_ids_json", "hash", "cutoff"), immutable=True, doc="exact items a citation may point at"),
+        NodeSpec("RetrievalManifest", ("run_id", "execution_id", "item_ids_json", "hash", "cutoff"), ("query_template", "truncated", "gaps_json"), immutable=True, doc="exact items a citation may point at"),
         NodeSpec("Hypothesis", ("run_id", "statement", "created_step"), doc="candidate explanation"),
         NodeSpec("Assessment", ("hypothesis_id", "sequence", "status", "summary", "assessed_at"), immutable=True, doc="versioned; never rewritten"),
         NodeSpec("Claim", ("run_id", "text", "kind"), doc="factual claims must cite primary evidence"),

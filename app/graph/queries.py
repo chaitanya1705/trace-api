@@ -9,6 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 MAX_LIMIT = 200
+#: O8: an expansion returns at most 100 nodes / 200 edges. Path templates return one row per path, so their row
+#: ceiling is the node ceiling; everything else is bounded by MAX_LIMIT.
+MAX_NODES = 100
+MAX_EDGES = 200
+EXPANSION_PREFIXES = ("callers_", "potential_exposure")
+FULLTEXT_CANDIDATES = 500
 MAX_HOPS = 4  # default 2, ceiling 4 (O8)
 
 
@@ -119,6 +125,17 @@ TEMPLATES: dict[str, Template] = {
             frozenset({"project_id", "symbol_id", "build_ids", "limit"}),
             "incoming static consumers of a changed symbol and the services they map to: potential propagation, not an observed outage",
         ),
+        Template(
+            "source_text_search", 1,
+            "CALL db.index.fulltext.queryNodes('source_text', $query, {limit: $candidates}) YIELD node, score "
+            "WHERE node.project_id = $project_id "
+            "MATCH (f:Entity:SourceFile {project_id: $project_id, id: node.file_id}) "
+            "WHERE f.revision_id IN $revision_ids "
+            "RETURN node.id AS id, f.path AS path, node.start_line AS start_line, node.end_line AS end_line, node.content_hash AS content_hash, score "
+            "ORDER BY score DESC LIMIT $limit",
+            frozenset({"project_id", "query", "revision_ids", "candidates", "limit"}),
+            "full-text candidates, scope-filtered before leaving the graph layer; the global candidate pool is bounded, so truncation is reported",
+        ),
         *(_caller_paths(d) for d in range(1, MAX_HOPS + 1)),
     ]
 }
@@ -143,7 +160,17 @@ def check_params(name: str, params: dict) -> Template:
     limit = params["limit"]
     if not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise TemplateError(f"{name}: limit must be 1..{MAX_LIMIT}")
+    if t.name.startswith(EXPANSION_PREFIXES) and limit > MAX_NODES:
+        raise TemplateError(f"{name}: an expansion returns at most {MAX_NODES} rows")
     return t
+
+
+def escape_lucene(text: str) -> str:
+    """Make free text safe as a Lucene query (no operators, wildcards or field syntax)."""
+    out = []
+    for ch in text:
+        out.append("\\" + ch if ch in '+-&|!(){}[]^"~*?:\\/' else ch)
+    return "".join(out).strip()
 
 
 def _path(p) -> dict:
@@ -162,5 +189,22 @@ def run_template(driver, database: str, name: str, **params) -> list[dict]:
     t = check_params(name, params)
     with driver.session(database=database) as s:
         if t.name.startswith("callers_"):
-            return [_path(r["p"]) for r in s.run(t.cypher, **params)]
-        return [r.data() for r in s.run(t.cypher, **params)]
+            return [_path(r["p"]) for r in s.run(t.cypher, parameters=params)]
+        return [r.data() for r in s.run(t.cypher, parameters=params)]
+
+
+@dataclass(frozen=True)
+class Bounded:
+    rows: list
+    truncated: bool  # the result hit its row limit, or the full-text candidate pool was exhausted
+    template: str  # name@version, recorded in the RetrievalManifest
+
+
+def run_bounded(driver, database: str, name: str, **params) -> Bounded:
+    """run_template plus the truncation signal the investigator must turn into an EvidenceGap(truncated_query)."""
+    t = check_params(name, params)
+    rows = run_template(driver, database, name, **params)
+    truncated = len(rows) >= params["limit"] or (name == "source_text_search" and len(rows) >= params["candidates"])
+    if name == "source_text_search" and params["candidates"] > FULLTEXT_CANDIDATES:
+        raise TemplateError(f"{name}: candidates must be <= {FULLTEXT_CANDIDATES}")
+    return Bounded(rows, truncated, t.ref)
