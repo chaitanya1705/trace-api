@@ -67,7 +67,7 @@ async def capture_logs(ctx: JobContext) -> dict:
                 total = await _flush(c, row, batch, total)
     finally:
         await http.aclose()
-    return {**total, "seconds": seconds, "note": "Live capture only sees lines logged while it ran; use a log drain for continuous history."}
+    return {**total, "seconds": seconds, "note": "Live capture is partial: Vercel's runtime-log stream delivers only some lines logged while it runs (measured: about 3 of ~16 diagnostics events per request) and no history. Use a log drain for complete logs."}
 
 
 async def _flush(c, row, batch, total):
