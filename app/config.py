@@ -20,8 +20,8 @@ class Settings(BaseSettings):
 
     trace_env: Literal["development", "test", "production"] = "development"
 
-    # Identity: 'supabase' (production) or 'local' (development only; HS256 tokens from /api/v1/dev/token)
-    auth_mode: Literal["supabase", "local"] = "supabase"
+    # Identity: 'supabase' (production), 'local' (dev HS256 tokens) or 'off' (dev: no login, fixed dev user)
+    auth_mode: Literal["supabase", "local", "off"] = "supabase"
     local_auth_secret: str = "dev-only-change-me-dev-only-change-me"
 
     # Control plane (any Postgres; Supabase Postgres in production)
@@ -107,8 +107,8 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError("missing required settings: " + ", ".join(m.upper() for m in missing))
-        if self.auth_mode == "local" and self.trace_env == "production":
-            raise ValueError("auth_mode=local is not allowed in production")
+        if self.auth_mode in ("local", "off") and self.trace_env == "production":
+            raise ValueError("auth_mode local/off is not allowed in production")
         if self.graph_default_hops > self.graph_max_hops:
             raise ValueError("graph_default_hops exceeds graph_max_hops")
         return self
@@ -121,7 +121,7 @@ class Settings(BaseSettings):
         """Names and on/off only - safe to log at startup."""
         return {
             "database": bool(self.database_url),
-            "auth": self.auth_mode == "local" or bool(self.supabase_jwks_url),
+            "auth": self.auth_mode != "supabase" or bool(self.supabase_jwks_url),
             "auth_mode": self.auth_mode,
             "neo4j": bool(self.neo4j_uri),
             "model": bool(self.openai_api_key),

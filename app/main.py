@@ -26,7 +26,9 @@ async def build_container(settings: Settings) -> Container:
     c = Container(settings=settings)
     if settings.database_url:
         c.pool = await open_pool(settings.database_url)
-    if settings.auth_mode == "local":
+    if settings.auth_mode == "off":
+        pass  # current_principal resolves the dev user itself
+    elif settings.auth_mode == "local":
         from app.auth.local import LocalTokenVerifier
 
         c.verifier = LocalTokenVerifier(settings.local_auth_secret)
