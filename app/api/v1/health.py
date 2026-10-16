@@ -44,7 +44,7 @@ async def ready(response: Response, c: Container = Depends(get_container)) -> di
     parts = {
         "database": await _check_db(c),
         "graph": await _check_neo4j(c),
-        "auth": "ok" if c.verifier else "not_configured",
+        "auth": "ok" if (c.verifier or s.auth_mode == "off") else "not_configured",
         "vault": "ok" if c.vault else "not_configured",
         "model": "configured" if s.openai_api_key else "not_configured",
     }
