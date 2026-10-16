@@ -140,8 +140,7 @@ cannot select them.
 
 Built by a collaborator in separate repos (plans under `Plan's And Artifacts/Plans/ShopFlow|PulseLab`). ShopFlow is the
 target system with deliberate defects; PulseLab is a browser-only traffic generator that exports symptom tickets as
-JSON. TRACE builds **only placeholders**: optional `PULSELAB_URL`, `SHOPFLOW_WEB_URL`, `SHOPFLOW_API_URL`,
-`SHOPFLOW_REPOSITORY`, surfaced by `GET /api/v1/integrations/demo` (`configured:false` when blank) and PulseLab's origin
+JSON. TRACE builds **only placeholders**: optional `PULSELAB_URL`, `SHOPFLOW_WEB_URL`, `SHOPFLOW_API_URL`, surfaced by `GET /api/v1/integrations/demo` (`configured:false` when blank) and PulseLab's origin
 is added to CORS when set. ShopFlow has no TRACE endpoint; its runtime evidence arrives through the Vercel log drain and
 its code through the GitHub connection. Ticket intake (T-010) must accept PulseLab's JSON export shape once that
 export format is published; until then intake is defined by TRACE's own ticket schema.

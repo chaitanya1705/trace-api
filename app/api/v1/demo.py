@@ -21,6 +21,5 @@ async def demo_links(request: Request, _: OrgContext = Depends(org_context), c: 
         "pulselab": _link(s.pulselab_url),
         "shopflow_web": _link(s.shopflow_web_url),
         "shopflow_api": _link(s.shopflow_api_url),
-        "shopflow_repository": s.shopflow_repository,
         "note": "Demo apps are built separately. TRACE reads ShopFlow only through its Vercel and GitHub connections.",
     })

@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     pulselab_url: str | None = None          # browser-only traffic generator; its JSON export feeds ticket intake (T-010)
     shopflow_web_url: str | None = None
     shopflow_api_url: str | None = None      # the backend TRACE's connected Vercel project/GitHub repo describe
-    shopflow_repository: str | None = None   # e.g. owner/shopflow-backend (informational; selection still goes through discovery)
 
     trace_public_origin: str = "http://localhost:8000"
     trace_allowed_origins: str = "http://localhost:3000"

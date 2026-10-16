@@ -27,7 +27,7 @@ Applies to this project only. Repos: trace-web (https://github.com/chaitanya1705
 
 ## Demo apps (built separately by a collaborator - do NOT build them here)
 - **ShopFlow** (FastAPI backend + React frontend on Vercel, deliberate defects) is the system TRACE investigates. **PulseLab** (browser-only React app) sends traffic to ShopFlow and exports symptom tickets as JSON.
-- TRACE reaches them only through placeholders in env: `PULSELAB_URL`, `SHOPFLOW_WEB_URL`, `SHOPFLOW_API_URL`, `SHOPFLOW_REPOSITORY` (all optional; shown by `GET /api/v1/integrations/demo` as `configured:false` when blank). Never hardcode URLs, never mock their data. ShopFlow's logs reach TRACE via the Vercel log drain, not a ShopFlow endpoint.
+- TRACE reaches them only through placeholders in env: `PULSELAB_URL`, `SHOPFLOW_WEB_URL`, `SHOPFLOW_API_URL` (all optional; shown by `GET /api/v1/integrations/demo` as `configured:false` when blank). Never hardcode URLs, never mock their data. ShopFlow's logs reach TRACE via the Vercel log drain, not a ShopFlow endpoint.
 - PulseLab's JSON export is the expected input of ticket intake (T-010). Never expose evaluator data/expected defects to the investigator.
 
 ## How to run
