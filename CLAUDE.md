@@ -37,7 +37,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt   # or .ve
 .venv/Scripts/python -m ruff check app tests
 .venv/Scripts/python -m app.openapi_export     # regenerate docs/openapi.json (CI: add --check) after changing any API
 cp .env.example .env  # AUTH_MODE=off, DATABASE_URL=...
-python -m app.cli migrate && uvicorn app.main:app_factory --factory   # API;  python -m app.worker_main  # worker
+uvicorn app.main:app_factory --factory   # API (applies pending migrations at startup; AUTO_MIGRATE=false to disable);  python -m app.worker_main  # worker
 ```
 Use the Write/Edit tools rather than shell heredocs for multi-line files.
 

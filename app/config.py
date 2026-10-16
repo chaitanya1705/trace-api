@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     # Control plane (any Postgres; Supabase Postgres in production)
     database_url: str | None = None
+    # Apply pending SQL migrations at API/worker startup (guarded by a Postgres advisory lock, so several instances
+    # starting together are safe). Use Supabase's direct or session-mode connection string; transaction-mode
+    # pooling (port 6543) does not hold session advisory locks reliably.
+    auto_migrate: bool = True
     supabase_url: str | None = None
     supabase_jwks_url: str | None = None
     supabase_jwt_audience: str = "authenticated"

@@ -25,6 +25,12 @@ async def build_container(settings: Settings) -> Container:
 
     c = Container(settings=settings)
     if settings.database_url:
+        if settings.auto_migrate:
+            from app.storage.postgres.migrate import migrate
+
+            applied = await migrate(settings.database_url)
+            if applied:
+                log.info("migrations applied", extra={"versions": applied})
         c.pool = await open_pool(settings.database_url)
     if settings.auth_mode == "off":
         pass  # current_principal resolves the dev user itself
