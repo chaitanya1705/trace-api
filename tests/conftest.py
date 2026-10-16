@@ -18,6 +18,9 @@ from app.storage.postgres.migrate import migrate
 from app.storage.postgres.pool import open_pool
 from app.storage.secrets import Vault, generate_key
 
+# Tests must not read a developer's local .env (e.g. AUTH_MODE=off would bypass the token checks under test).
+Settings.model_config["env_file"] = None
+
 
 class FakeVerifier:
     """TEST DOUBLE. Token format: 'test|<user-uuid>|<email>'. Production never constructs this."""
