@@ -78,8 +78,9 @@ async def _project(client, org):
 
 
 async def _run_jobs(container, n=1):
-    for _ in range(n):
-        await worker.run_one(container, "t", ["connection.verify"])
+    """Drain the queue: the test database is shared, so leftovers from other tests must not be picked up first."""
+    while await worker.run_one(container, "t", ["connection.verify"]):
+        pass
 
 
 async def test_pure_helpers():

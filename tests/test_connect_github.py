@@ -70,6 +70,8 @@ async def test_connect_flow_from_draft_without_a_trace_login(client, container, 
     again = await client.get(f"{API}/connect/github/callback", params={"installation_id": 4821, "state": state}, follow_redirects=False)
     assert again.status_code == 303
     assert len((await client.get(f"{API}/project-drafts/{did}/connections", headers=h)).json()["data"]) == 1
+    while await worker.run_one(container, "t", ["connection.verify"]):
+        pass
 
 
 async def test_callback_rejects_bad_state_and_foreign_installation(client, container, org, provider):
