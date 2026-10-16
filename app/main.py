@@ -45,12 +45,24 @@ async def build_container(settings: Settings) -> Container:
         )
     if settings.trace_secret_key:
         c.vault = Vault.from_settings(settings)
+    from app.graph.driver import create_driver, migrate_graph
+
+    driver = create_driver(settings)
+    if driver is not None:
+        c.extras["neo4j"] = driver
+        if settings.auto_migrate:
+            applied = migrate_graph(settings, driver)
+            if applied:
+                log.info("graph migrations applied", extra={"versions": applied})
     return c
 
 
 async def close_container(c: Container) -> None:
     if c.pool is not None:
         await c.pool.close()
+    driver = c.extras.get("neo4j")
+    if driver is not None:
+        driver.close()
 
 
 def create_app(settings: Settings | None = None, container: Container | None = None) -> FastAPI:
