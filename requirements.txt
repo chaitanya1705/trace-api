@@ -1,4 +1,4 @@
-# Runtime dependencies (versions tested together on Python 3.11). pyproject.toml is the source of truth for ranges.
+# Single requirements file: what runs locally is what runs in prod. Tested together on Python 3.11.
 fastapi==0.143.3
 uvicorn[standard]==0.54.0
 pydantic[email]==2.14.1
@@ -10,3 +10,10 @@ PyJWT[crypto]==2.15.1
 cryptography==50.0.2
 neo4j==6.4.1
 openai==3.31.0
+
+# tests / lint (also installed everywhere so there is only one environment to reason about)
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.17.1
+mypy==2.4.0
+pgserver==0.1.4
