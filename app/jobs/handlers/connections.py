@@ -6,8 +6,10 @@ from uuid import UUID
 
 from app.audit import audit
 from app.connectors import github as gh
+from app.connectors import postgres_db as pgdb
 from app.connectors import vercel as vc
 from app.domain.connections import service as svc
+from app.jobs import queue
 from app.jobs.queue import PermanentJobError
 from app.jobs.worker import JobContext, handler
 
@@ -40,6 +42,8 @@ async def verify_connection(ctx: JobContext) -> dict:
     try:
         if row["provider"] == "github":
             result = await gh.verify(client, auth_method=row["auth_method"], config=row["config"], secret=secret)
+        elif row["provider"] == "postgres":
+            result = await pgdb.verify(secret or "")
         else:
             result = await vc.verify(client, auth_method=row["auth_method"], config=row["config"])
     finally:
@@ -83,4 +87,10 @@ async def verify_connection(ctx: JobContext) -> dict:
                     result="failure" if outcome == "failed" else "success", target_type="connection", target_id=cid,
                     details={"outcome": outcome, "provider": row["provider"]})
         await conn.commit()
+    if row["provider"] == "postgres" and outcome != "failed" and row["project_id"]:
+        async with c.pool.connection() as conn:  # first read of the schema right after a successful verify
+            await queue.enqueue(conn, organization_id=row["organization_id"], project_id=row["project_id"], kind="schema.capture",
+                                payload={"connection_id": str(cid)}, requested_by=ctx.job["requested_by"], resource_type="connection",
+                                resource_id=cid, idempotency_key=f"capture:{cid}:{check['id']}")
+            await conn.commit()
     return {"outcome": outcome, "check_id": str(check["id"])}

@@ -5,6 +5,8 @@ import asyncio
 import logging
 
 import app.jobs.handlers  # noqa: F401  (registers job handlers)
+import app.jobs.handlers.deployments  # noqa: F401
+import app.jobs.handlers.schema  # noqa: F401
 from app.config import load_settings
 from app.jobs.worker import run_forever
 from app.main import build_container, close_container

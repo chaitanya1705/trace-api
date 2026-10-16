@@ -43,7 +43,7 @@ class RotateIn(BaseModel):
     secret_expires_at: datetime | None = None
 
 
-_CONFIG_KEYS = {"github": {"installation_id"}, "vercel": {"team_id"}, "generic": set()}
+_CONFIG_KEYS = {"github": {"installation_id"}, "vercel": {"team_id"}, "generic": set(), "postgres": set()}
 
 
 def clean_config(provider: str, config: dict) -> dict:

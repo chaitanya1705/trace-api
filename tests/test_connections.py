@@ -217,4 +217,4 @@ async def test_providers_catalog_gates_unavailable_modes(client, org, container)
     assert modes["vercel_integration"]["available"] is False and modes["vercel_integration"]["reason"]
     gh_modes = {m["id"]: m for m in cat["github"]["auth_modes"]}
     assert gh_modes["github_enterprise_server"]["available"] is False
-    assert set(cat) == {"github", "vercel", "generic"}                    # no Azure/AWS/GCP/Jira/... offered
+    assert set(cat) == {"github", "vercel", "generic", "postgres"}                    # no Azure/AWS/GCP/Jira/... offered

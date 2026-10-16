@@ -21,8 +21,8 @@ from app.storage.secrets import Sealed, Vault, mask
 
 # provider -> (kind, allowed auth methods)
 PROVIDERS = {"github": ("code", {"github_app", "github_pat"}), "vercel": ("hosting", {"vercel_token", "vercel_integration"}),
-             "generic": ("hosting", {"signed_webhook"})}
-SECRET_METHODS = {"github_pat", "vercel_token"}
+             "generic": ("hosting", {"signed_webhook"}), "postgres": ("database", {"postgres_dsn"})}
+SECRET_METHODS = {"github_pat", "vercel_token", "postgres_dsn"}
 
 
 def providers_catalog(s: Settings) -> list[dict[str, Any]]:
@@ -45,6 +45,10 @@ def providers_catalog(s: Settings) -> list[dict[str, Any]]:
             {"id": "vercel_integration", "label": "TRACE integration (read-only)", "recommended": True, "available": False,
              "reason": "The TRACE Vercel integration is not provisioned on this deployment."}],
          "operations": ["list_projects", "list_deployments"], "writes": []},
+        {"provider": "postgres", "kind": "database", "descriptor_version": 1, "auth_modes": [
+            {"id": "postgres_dsn", "label": "Postgres connection string", "recommended": True, "available": True,
+             "reason": "TRACE reads schema metadata only (tables, columns, keys, indexes), in a read-only session. Prefer a read-only role."}],
+         "operations": ["read_schema"], "writes": []},
         {"provider": "generic", "kind": "hosting", "descriptor_version": 1, "auth_modes": [
             {"id": "signed_webhook", "label": "Signed webhook / upload", "recommended": True, "available": True, "reason": None}],
          "operations": ["ingest_events"], "writes": []},
@@ -75,6 +79,8 @@ def build_adapter(c: Container, row: dict, secret: str | None):
         return gh.GitHubClient(http, s.github_app_id, s.github_app_private_key), http
     if row["provider"] == "vercel":
         return vc.VercelClient(http, secret or "", (row["config"] or {}).get("team_id")), http
+    if row["provider"] == "postgres":
+        return None, http  # the postgres adapter connects directly; it has no HTTP client
     raise Unprocessable("Provider has no API client")
 
 
@@ -182,6 +188,6 @@ async def discover(c: Container, conn: AsyncConnection, row: dict, *, include_ar
         if row["provider"] == "vercel":
             projects, truncated = await client.projects()
             return [vc.project_view(p) for p in projects], len(projects), truncated
-        return [], 0, False
+        return [], 0, False  # postgres/generic: nothing to list (schema is read by the schema.capture job)
     finally:
         await http.aclose()
