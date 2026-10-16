@@ -35,6 +35,43 @@
         "title": "AcceptedOut",
         "type": "object"
       },
+      "AttachIn": {
+        "properties": {
+          "draft_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Id"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "integer"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "installation_id"
+        ],
+        "title": "AttachIn",
+        "type": "object"
+      },
       "ConnectionBrief": {
         "properties": {
           "id": {
@@ -1746,6 +1783,46 @@
         ]
       }
     },
+    "/api/v1/connect/github/attach": {
+      "post": {
+        "description": "Use an existing installation without leaving TRACE.",
+        "operationId": "attach_api_v1_connect_github_attach_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach",
+        "tags": [
+          "connect"
+        ]
+      }
+    },
     "/api/v1/connect/github/callback": {
       "get": {
         "description": "Public on purpose: the browser arrives from github.com with no token. `state` is the proof of who started this.",
@@ -1807,6 +1884,26 @@
           }
         },
         "summary": "Callback",
+        "tags": [
+          "connect"
+        ]
+      }
+    },
+    "/api/v1/connect/github/installations": {
+      "get": {
+        "description": "Existing installations of TRACE's GitHub App, for when the app is already installed (GitHub then does not redirect back).\nPOC single-tenant behaviour: every installation of this app is listed. A multi-tenant deployment must not do this.",
+        "operationId": "list_installations_api_v1_connect_github_installations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Installations",
         "tags": [
           "connect"
         ]
@@ -3088,6 +3185,114 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/deployments": {
+      "get": {
+        "operationId": "list_deployments_api_v1_projects__project_id__deployments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Environment"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Deployments",
+        "tags": [
+          "architecture"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/deployments/sync": {
+      "post": {
+        "operationId": "sync_deployments_api_v1_projects__project_id__deployments_sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Deployments",
+        "tags": [
+          "architecture"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/environments": {
       "get": {
         "operationId": "get_environments_api_v1_projects__project_id__environments_get",
@@ -3784,6 +3989,89 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/schema": {
+      "get": {
+        "description": "Latest schema snapshot of the project's database. `connected:false` / `captured:false` say what is missing; no tables are invented.",
+        "operationId": "get_schema_api_v1_projects__project_id__schema_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Schema",
+        "tags": [
+          "architecture"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/schema/refresh": {
+      "post": {
+        "operationId": "refresh_schema_api_v1_projects__project_id__schema_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Schema",
+        "tags": [
+          "architecture"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/services": {
       "get": {
         "operationId": "get_services_api_v1_projects__project_id__services_get",
@@ -3875,6 +4163,48 @@
         "summary": "Put Services",
         "tags": [
           "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/system-map": {
+      "get": {
+        "description": "Structure as CONFIGURED in TRACE plus deployment facts from the provider. Nothing here is 'observed in logs': every edge\ncarries its origin so the UI can label it. Unknown links are listed as gaps instead of being drawn.",
+        "operationId": "system_map_api_v1_projects__project_id__system_map_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "System Map",
+        "tags": [
+          "architecture"
         ]
       }
     },
