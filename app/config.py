@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # Older keys kept only to decrypt existing ciphertext during manual re-encryption: "1:<b64>,2:<b64>"
     trace_secret_keys_previous: str | None = None
 
+    # Demo environment built by a collaborator (separate repos). Optional placeholders: TRACE works without them and
+    # reports them as "not configured". TRACE never hardcodes these and never hands evaluator data to the investigator.
+    pulselab_url: str | None = None          # browser-only traffic generator; its JSON export feeds ticket intake (T-010)
+    shopflow_web_url: str | None = None
+    shopflow_api_url: str | None = None      # the backend TRACE's connected Vercel project/GitHub repo describe
+    shopflow_repository: str | None = None   # e.g. owner/shopflow-backend (informational; selection still goes through discovery)
+
     trace_public_origin: str = "http://localhost:8000"
     trace_allowed_origins: str = "http://localhost:3000"
 
@@ -72,6 +79,16 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(15, ge=1)
     job_max_attempts: int = Field(3, ge=1)
     ingest_max_body_bytes: int = 1024 * 1024
+
+    @field_validator("pulselab_url", "shopflow_web_url", "shopflow_api_url", mode="before")
+    @classmethod
+    def _http_url(cls, v):
+        if v in (None, ""):
+            return None
+        v = str(v).strip().rstrip("/")
+        if not v.startswith(("https://", "http://")) or " " in v:
+            raise ValueError("must be an http(s) URL")
+        return v
 
     @field_validator("trace_secret_key")
     @classmethod
@@ -115,7 +132,11 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [o.strip() for o in self.trace_allowed_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.trace_allowed_origins.split(",") if o.strip()]
+        # PulseLab is a browser app that will POST symptom tickets to the intake API, so its origin must pass CORS.
+        if self.pulselab_url and self.pulselab_url not in origins:
+            origins.append(self.pulselab_url)
+        return origins
 
     def capability_report(self) -> dict[str, bool]:
         """Names and on/off only - safe to log at startup."""

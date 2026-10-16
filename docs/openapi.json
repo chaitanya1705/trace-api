@@ -1684,6 +1684,25 @@
         ]
       }
     },
+    "/api/v1/integrations/demo": {
+      "get": {
+        "operationId": "demo_links_api_v1_integrations_demo_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Demo Links",
+        "tags": [
+          "demo"
+        ]
+      }
+    },
     "/api/v1/invitations/accept": {
       "post": {
         "operationId": "accept_invitation_api_v1_invitations_accept_post",
