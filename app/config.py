@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # GitHub: read-plane and remediation-plane are separate apps (A13)
     github_app_id: str | None = None
     github_app_private_key: str | None = None
+    github_app_private_key_path: str | None = None   # easier than a multi-line env value; file stays out of git
     github_webhook_secret: str | None = None
     github_remediation_app_id: str | None = None
     github_remediation_private_key: str | None = None
@@ -79,6 +80,17 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(15, ge=1)
     job_max_attempts: int = Field(3, ge=1)
     ingest_max_body_bytes: int = 1024 * 1024
+
+    @model_validator(mode="after")
+    def _load_key_file(self) -> Settings:
+        if self.github_app_private_key_path and not self.github_app_private_key:
+            from pathlib import Path
+
+            try:
+                self.github_app_private_key = Path(self.github_app_private_key_path).read_text(encoding="utf-8")
+            except OSError:
+                raise ValueError("github_app_private_key_path is not readable") from None
+        return self
 
     @field_validator("pulselab_url", "shopflow_web_url", "shopflow_api_url", mode="before")
     @classmethod

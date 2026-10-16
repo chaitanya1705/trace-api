@@ -64,6 +64,14 @@ class GitHubClient:
             raise ProviderError("not_configured", "GitHub App is not configured on this TRACE deployment")
         return self.app_id, self.private_key
 
+    async def app_info(self) -> dict[str, Any]:
+        a, k = self._need_app()
+        return (await self._get("/app", app_jwt(a, k), "Check the GitHub App")).json()
+
+    async def list_installations(self) -> list[dict[str, Any]]:
+        a, k = self._need_app()
+        return (await self._get("/app/installations", app_jwt(a, k), "List installations", {"per_page": 100})).json()
+
     async def installation(self, installation_id: int | str) -> dict[str, Any]:
         a, k = self._need_app()
         return (await self._get(f"/app/installations/{installation_id}", app_jwt(a, k), "Find installation")).json()

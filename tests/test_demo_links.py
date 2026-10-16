@@ -24,3 +24,12 @@ def test_url_validation_and_blank_means_unset():
     assert Settings(trace_env="test", shopflow_api_url="https://x.app/").shopflow_api_url == "https://x.app"
     with pytest.raises(ValueError):
         Settings(trace_env="test", pulselab_url="javascript:alert(1)")
+
+
+def test_private_key_can_be_read_from_file(tmp_path):
+    f = tmp_path / "k.pem"
+    f.write_text("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n")
+    s = Settings(trace_env="test", github_app_id="1", github_app_private_key_path=str(f))
+    assert s.github_app_private_key.startswith("-----BEGIN")
+    with pytest.raises(ValueError, match="not readable"):
+        Settings(trace_env="test", github_app_private_key_path=str(tmp_path / "missing.pem"))
