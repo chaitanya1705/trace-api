@@ -26,7 +26,11 @@ async def build_container(settings: Settings) -> Container:
     c = Container(settings=settings)
     if settings.database_url:
         c.pool = await open_pool(settings.database_url)
-    if settings.supabase_jwks_url:
+    if settings.auth_mode == "local":
+        from app.auth.local import LocalTokenVerifier
+
+        c.verifier = LocalTokenVerifier(settings.local_auth_secret)
+    elif settings.supabase_jwks_url:
         issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1" if settings.supabase_url else None
         c.verifier = SupabaseTokenVerifier(
             jwks_url=settings.supabase_jwks_url, issuer=issuer, audience=settings.supabase_jwt_audience
@@ -78,6 +82,10 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     install_error_handlers(app)
     app.include_router(health_router)
     app.include_router(api_router, prefix="/api/v1")
+    if settings.auth_mode == "local" and settings.trace_env != "production":
+        from app.api.v1 import dev
+
+        app.include_router(dev.router, prefix="/api/v1")
     return app
 
 
