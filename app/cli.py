@@ -66,6 +66,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="python -m app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("migrate")
+    sub.add_parser("gen-secret-key", help="print a new TRACE_SECRET_KEY (32 random bytes, urlsafe base64) for a deployment")
+    pe = sub.add_parser("pem-oneline", help="print a GitHub App private key file as the single-line value for GITHUB_APP_PRIVATE_KEY")
+    pe.add_argument("path")
     sub.add_parser("github-check", help="verify the GitHub App id/key against api.github.com and list installations")
     b = sub.add_parser("bootstrap-org")
     b.add_argument("--name", required=True)
@@ -73,6 +76,17 @@ def main() -> None:
     b.add_argument("--owner-name")
     b.add_argument("--owner-user-id", help="identity-provider user id (required unless AUTH_MODE=local)")
     a = ap.parse_args()
+    if a.cmd == "gen-secret-key":  # needs no configuration
+        from app.storage.secrets import generate_key
+
+        print(generate_key())
+        return
+    if a.cmd == "pem-oneline":
+        from pathlib import Path
+
+        text = Path(a.path).read_text(encoding="utf-8").strip()
+        print((chr(92) + "n").join(text.splitlines()))
+        return
     s = load_settings()
     if a.cmd == "github-check":
         raise SystemExit(asyncio.run(github_check(s)))
