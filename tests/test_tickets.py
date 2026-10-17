@@ -84,6 +84,30 @@ async def test_assignment_enqueues_nothing_and_sets_owner(client, org, container
     assert [x["id"] for x in res["data"]] == [t["id"]] and res["meta"]["coverage"]["counts"]["open"] == 0
 
 
+async def test_investigate_returns_active_run_for_repeat_click(client, org, container, monkeypatch):
+    from app.api.v1 import investigations
+
+    pid, h = await _setup(client, org)
+    t = (await client.post(f"{API}/tickets", headers=h, json={"title": "Investigate explicitly"})).json()["data"]["ticket"]
+    assigned = await client.patch(f"{API}/tickets/{t['id']}", headers=h, json={"version": t["version"], "project_id": pid})
+    assert assigned.status_code == 200
+
+    container.extras["neo4j"] = object()
+    monkeypatch.setattr(investigations.R, "active_run", lambda *_args: None)
+    monkeypatch.setattr(investigations, "_start", lambda *_args: None)
+    investigations._active.pop(t["id"], None)
+    first = await client.post(f"{API}/tickets/{t['id']}/investigate", headers=h, json={})
+    assert first.status_code == 202
+    run = first.json()["data"]
+
+    repeated = await client.post(f"{API}/tickets/{t['id']}/investigate", headers=h, json={})
+
+    assert repeated.status_code == 409
+    assert repeated.json()["error"]["code"] == "run_active"
+    assert repeated.json()["error"]["details"] == {"run_id": run["run_id"], "project_id": pid}
+    investigations._active.pop(t["id"], None)
+
+
 async def test_pulselab_import_maps_redacts_dedupes_and_revises(client, org):
     pid, h = await _setup(client, org)
     r = await client.post(f"{API}/tickets/import/pulselab", headers=h, content=json.dumps(EXPORT))

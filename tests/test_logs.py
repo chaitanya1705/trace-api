@@ -10,6 +10,7 @@ import pytest
 
 import app.jobs.handlers  # noqa: F401
 import app.jobs.handlers.logs  # noqa: F401
+from app.connectors.base import ProviderError
 from app.domain.ingest import vercel_logs as vl
 from app.errors import Unprocessable
 from app.jobs import worker
@@ -110,6 +111,20 @@ async def test_drain_intake_signature_formats_dedupe_scope_and_search(client, co
     assert (await client.get(f"{API}/projects/{pid}/logs?since=garbage", headers=h)).status_code == 422
 
 
+async def test_ticket_log_filters_can_constrain_service_exactly(client, container, org):
+    pid, cid, h, _ = await setup(client, container, org)
+    secret = await secret_for(client, cid, h)
+    rows = [drain_rec(1, path="/api/orders", requestId="order-1"), drain_rec(2, path="/api/payments", requestId="payment-1")]
+    body = json.dumps(rows).encode()
+    assert (await client.post(f"{API}/ingest/vercel/{cid}", content=body,
+                              headers={"x-vercel-signature": sig(secret, body)})).json()["accepted"] == 2
+
+    filtered = (await client.get(f"{API}/projects/{pid}/logs?environment=production&service_hint=POST+%2Fapi%2Forders&request_id=order-1",
+                                headers=h)).json()["data"]
+    assert len(filtered) == 1 and filtered[0]["service_hint"] == "/api/orders"
+    assert (await client.get(f"{API}/projects/{pid}/logs?service_hint=%2Fapi%2Fnot-found", headers=h)).json()["data"] == []
+
+
 async def test_empty_state_is_unknown_not_healthy(client, container, org):
     pid, cid, h, _ = await setup(client, container, org)
     st = (await client.get(f"{API}/projects/{pid}/logs/status", headers=h)).json()["data"]
@@ -134,6 +149,94 @@ async def test_live_capture_stores_structured_runtime_logs(client, container, or
     while await worker.run_one(container, "t", KINDS):
         pass
     assert (await client.get(f"{API}/projects/{pid}/logs", headers=h)).json()["meta"]["coverage"]["stored_total"] == 2
+
+
+async def test_failed_capture_preserves_partial_results(client, container, org, monkeypatch):
+    from app.jobs.handlers import logs as handler_mod
+
+    async def interrupted_tail(client_, ppid, dep, *, seconds, max_lines=2000):
+        for line in RuntimeLogs.LINES:
+            yield line
+        raise ProviderError("stream_interrupted", "Vercel stream interrupted")
+
+    pid, _, h, _ = await setup(client, container, org, RuntimeLogs())
+    monkeypatch.setattr(handler_mod.vc, "tail_runtime_logs", interrupted_tail)
+    assert (await client.post(f"{API}/projects/{pid}/logs/capture", headers=h, json={"seconds": 5})).status_code == 202
+    while await worker.run_one(container, "t", KINDS):
+        pass
+
+    st = (await client.get(f"{API}/projects/{pid}/logs/status", headers=h)).json()["data"]["last_capture"]
+    assert st["status"] == "failed" and st["error"]["message"] == "Vercel stream interrupted"
+    assert st["result_ref"]["read"] == 2 and st["result_ref"]["accepted"] == 2
+    assert st["result_ref"]["resources"] == [{"provider_project_id": "prj_1", "environment": "production",
+                                                 "deployment": "dpl_1", "outcome": "partial", "read": 2,
+                                                 "accepted": 2, "duplicates": 0}]
+    stored = (await client.get(f"{API}/projects/{pid}/logs?request_id=rq-9", headers=h)).json()["data"]
+    assert len(stored) == 1
+
+
+async def test_cancelled_capture_preserves_events_flushed_before_cancellation(client, container, org, monkeypatch):
+    from app.jobs.handlers import logs as handler_mod
+
+    pid, _, h, _ = await setup(client, container, org, RuntimeLogs())
+    monkeypatch.setattr(handler_mod, "FLUSH", 1)
+    original_check_cancel = worker.JobContext.check_cancel
+    checks = 0
+
+    async def cancel_after_first_flush(ctx):
+        nonlocal checks
+        checks += 1
+        if checks == 2:  # the first check is before provider access; the second follows the flush
+            ctx._cancel.set()
+        await original_check_cancel(ctx)
+
+    monkeypatch.setattr(worker.JobContext, "check_cancel", cancel_after_first_flush)
+    assert (await client.post(f"{API}/projects/{pid}/logs/capture", headers=h, json={"seconds": 5})).status_code == 202
+    assert await worker.run_one(container, "t", KINDS)
+
+    st = (await client.get(f"{API}/projects/{pid}/logs/status", headers=h)).json()["data"]["last_capture"]
+    assert st["status"] == "cancelled"
+    assert st["result_ref"]["read"] == 1 and st["result_ref"]["accepted"] == 1
+    assert st["result_ref"]["resources"] == [{"provider_project_id": "prj_1", "environment": "production",
+                                                 "deployment": "dpl_1", "outcome": "partial", "read": 1,
+                                                 "accepted": 1, "duplicates": 0}]
+    stored = (await client.get(f"{API}/projects/{pid}/logs?request_id=rq-9", headers=h)).json()["data"]
+    assert len(stored) == 1
+
+
+async def test_capture_retry_totals_include_events_stored_by_prior_attempt(client, container, org, monkeypatch):
+    from app.jobs.handlers import logs as handler_mod
+
+    attempts = 0
+
+    async def interrupted_once(client_, ppid, dep, *, seconds, max_lines=2000):
+        nonlocal attempts
+        attempts += 1
+        for line in RuntimeLogs.LINES:
+            yield line
+        if attempts == 1:
+            raise ProviderError("stream_interrupted", "Vercel stream interrupted", retryable=True)
+
+    monkeypatch.setattr(handler_mod.vc, "tail_runtime_logs", interrupted_once)
+    pid, _, h, _ = await setup(client, container, org, RuntimeLogs())
+    assert (await client.post(f"{API}/projects/{pid}/logs/capture", headers=h, json={"seconds": 5})).status_code == 202
+    assert await worker.run_one(container, "t", KINDS)
+
+    async with container.pool.connection() as conn:
+        job = await (await conn.execute("SELECT id, status, result_ref FROM jobs WHERE project_id=%s AND kind='logs.capture'", (pid,))).fetchone()
+        assert job["status"] == "queued"
+        assert job["result_ref"]["accepted"] == 2
+        await conn.execute("UPDATE jobs SET next_attempt_at=now() WHERE id=%s", (job["id"],))
+        await conn.commit()
+
+    assert await worker.run_one(container, "t", KINDS)
+    result = (await client.get(f"{API}/projects/{pid}/logs/status", headers=h)).json()["data"]["last_capture"]["result_ref"]
+    assert result["read"] == 4 and result["accepted"] == 2 and result["duplicates"] == 2
+    assert [r["outcome"] for r in result["resources"]] == ["partial", "captured"]
+    assert result["listening_seconds"] == 2 * (5 + handler_mod.DELIVERY_LAG_SECONDS)
+    assert attempts == 2
+    stored = (await client.get(f"{API}/projects/{pid}/logs?request_id=rq-9", headers=h)).json()["data"]
+    assert len(stored) == 1
 
 
 class ThreeProjects(RuntimeLogs):
