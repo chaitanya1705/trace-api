@@ -1,7 +1,14 @@
 """logs.capture: explicit, bounded, read-only live capture of a deployment's runtime logs ("Fetch from source", R-018).
-Results are normalized and stored before they are shown; a failed read stores nothing and says so."""
+Results are normalized and stored before they are shown; a failed read stores nothing and says so.
+
+Every scoped deployment is followed at the same time for the whole window, and each stream stays open
+DELIVERY_LAG_SECONDS longer than the window: Vercel delivers runtime-log lines about 10-11 s after they are logged
+(measured 2026-10-17 against ShopFlow), so lines logged near the end of the window would otherwise never arrive.
+Splitting the window between scoped projects and reading them one after another starved each of them (with three
+scoped projects a 30 s capture stored 2 lines where one scoped project stored 13 for the same traffic)."""
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from app.connectors import vercel as vc
@@ -13,7 +20,14 @@ from app.jobs.queue import PermanentJobError, TransientJobError
 from app.jobs.worker import JobContext, handler
 
 MAX_SECONDS = 60
+DELIVERY_LAG_SECONDS = 15
 FLUSH = 100
+NOTE = ("Live capture is partial: Vercel's runtime-log stream delivers only some lines logged while it runs (measured: about 3 of "
+        "~16 diagnostics events per request), about 10 s late, and no history. Use a log drain for complete logs.")
+
+
+def _job_error(e: ProviderError) -> Exception:
+    return (TransientJobError if e.retryable else PermanentJobError)(e.code, e.message)
 
 
 @handler("logs.capture")
@@ -35,45 +49,64 @@ async def capture_logs(ctx: JobContext) -> dict:
     if not scoped:
         raise PermanentJobError("no_scope", "No Vercel project is selected in Log scope" + (f" for {env_key}" if env_key else "") + ".")
     client, http = svc.build_adapter(c, row, secret)
-    total = {"accepted": 0, "duplicates": 0, "read": 0}
+    resources: list[dict] = []
     try:
+        targets = []
         for sp in scoped:
             await ctx.check_cancel()
             ppid, ek = sp["provider_resource_id"], sp["environment_key"]
             try:
                 deps, _ = await client.deployments(project_id=ppid, target="production" if ek == "production" else None, limit=1)
             except ProviderError as e:
-                raise (TransientJobError if e.retryable else PermanentJobError)(e.code, e.message) from None
+                raise _job_error(e) from None
             if not deps:
+                resources.append({"provider_project_id": ppid, "environment": ek, "deployment": None, "outcome": "no_deployment",
+                                  "read": 0, "accepted": 0, "duplicates": 0})
                 continue
-            dep = deps[0]["uid"]
-            await ctx.progress("capturing", {"deployment": dep, "environment": ek, "seconds": seconds})
-            batch: list = []
-            try:
-                async for rec in vc.tail_runtime_logs(client, ppid, dep, seconds=seconds / max(1, len(scoped))):
-                    total["read"] += 1
-                    r = normalize_runtime(rec, deployment_id=dep, provider_project_id=ppid, env_key=ek)
-                    if r is not None:
-                        batch.append((r, envs.get(ek)))
-                    if len(batch) >= FLUSH:
-                        total = await _flush(c, row, batch, total)
-                        batch = []
-                    await ctx.check_cancel()
-            except ProviderError as e:
-                if batch:
-                    total = await _flush(c, row, batch, total)
-                raise (TransientJobError if e.retryable else PermanentJobError)(e.code, e.message) from None
-            if batch:
-                total = await _flush(c, row, batch, total)
+            targets.append((ppid, ek, deps[0]["uid"]))
+        listen = seconds + DELIVERY_LAG_SECONDS
+        await ctx.progress("capturing", {"deployments": [t[2] for t in targets], "seconds": seconds, "listening_seconds": listen})
+        results = await asyncio.gather(*(_follow(ctx, row, client, envs, ppid, ek, dep, listen) for ppid, ek, dep in targets),
+                                       return_exceptions=True)
     finally:
         await http.aclose()
-    return {**total, "seconds": seconds, "note": "Live capture is partial: Vercel's runtime-log stream delivers only some lines logged while it runs (measured: about 3 of ~16 diagnostics events per request) and no history. Use a log drain for complete logs."}
+    errors = [r for r in results if isinstance(r, BaseException)]
+    if errors:
+        # Cancellation and unexpected failures win over provider errors; lines already stored stay stored.
+        other = next((e for e in errors if not isinstance(e, ProviderError)), None)
+        if other is not None:
+            raise other
+        raise _job_error(errors[0]) from None
+    resources += results
+    total = {k: sum(r[k] for r in resources) for k in ("read", "accepted", "duplicates")}
+    return {**total, "seconds": seconds, "listening_seconds": listen, "resources": resources, "note": NOTE}
 
 
-async def _flush(c, row, batch, total):
+async def _follow(ctx: JobContext, row, client, envs, ppid: str, ek: str, dep: str, listen: float) -> dict:
+    counts = {"read": 0, "accepted": 0, "duplicates": 0}
+    batch: list = []
+    try:
+        async for rec in vc.tail_runtime_logs(client, ppid, dep, seconds=listen):
+            counts["read"] += 1
+            r = normalize_runtime(rec, deployment_id=dep, provider_project_id=ppid, env_key=ek)
+            if r is not None:
+                batch.append((r, envs.get(ek)))
+            if len(batch) >= FLUSH:
+                await _flush(ctx.container, row, batch, counts)
+                batch = []
+            await ctx.check_cancel()
+    except ProviderError:
+        if batch:
+            await _flush(ctx.container, row, batch, counts)
+        raise
+    if batch:
+        await _flush(ctx.container, row, batch, counts)
+    return {"provider_project_id": ppid, "environment": ek, "deployment": dep, "outcome": "captured", **counts}
+
+
+async def _flush(c, row, batch, counts):
     async with c.pool.connection() as conn:
         r = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=row["id"], provider="vercel", rows=batch)
         await conn.commit()
-    total["accepted"] += r.accepted
-    total["duplicates"] += r.duplicates
-    return total
+    counts["accepted"] += r.accepted
+    counts["duplicates"] += r.duplicates
