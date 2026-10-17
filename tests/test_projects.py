@@ -121,3 +121,38 @@ def test_readiness_pure():
     r = {i.key: i for i in items}
     assert (r["hosting"].state, r["code"].state, r["log_scope"].state, r["code_graph"].state) == (
         "warning", "failed", "warning", "todo")
+
+
+async def test_delete_project_requires_typed_name_removes_data_and_keeps_audit(client, org, container):
+    r, h = await mk(client, org, "Doomed", services=[{"name": "api"}])
+    pid = r.json()["data"]["id"]
+    t = (await client.post(f"{API}/tickets", headers=h, json={"title": "A report", "project_id": pid})).json()["data"]["ticket"]
+    wrong = await client.delete(f"{API}/projects/{pid}?confirm=doomed-ish", headers=h)
+    assert wrong.status_code == 422 and wrong.json()["error"]["code"] == "confirmation_mismatch"
+    assert (await client.get(f"{API}/projects/{pid}", headers=h)).status_code == 200      # nothing was deleted
+
+    gone = await client.delete(f"{API}/projects/{pid}?confirm=Doomed", headers=h)
+    assert gone.status_code == 200 and gone.json()["data"]["deleted"] is True
+    assert (await client.get(f"{API}/projects/{pid}", headers=h)).status_code == 404
+    async with container.pool.connection() as conn:
+        envs = await (await conn.execute("SELECT count(*) AS n FROM environments WHERE project_id=%s", (uuid.UUID(pid),))).fetchone()
+        svcs = await (await conn.execute("SELECT count(*) AS n FROM services WHERE project_id=%s", (uuid.UUID(pid),))).fetchone()
+        tk = await (await conn.execute("SELECT project_id FROM tickets WHERE id=%s", (uuid.UUID(t["id"]),))).fetchone()
+        aud = await (await conn.execute("SELECT count(*) AS n FROM audit_events WHERE project_id=%s AND action='project.delete'", (uuid.UUID(pid),))).fetchone()
+    assert envs["n"] == 0 and svcs["n"] == 0
+    assert tk["project_id"] is None                       # by default the ticket returns to "Need a project"
+    assert aud["n"] == 1                                  # the audit trail is kept
+
+
+async def test_delete_project_can_also_delete_its_tickets_and_needs_manage_rights(client, org, container):
+    r, h = await mk(client, org, "Doomed Too")
+    pid = r.json()["data"]["id"]
+    t = (await client.post(f"{API}/tickets", headers=h, json={"title": "Another report", "project_id": pid})).json()["data"]["ticket"]
+    viewer_id, viewer_email = await add_member(container, org["id"], role="viewer")
+    denied = await client.delete(f"{API}/projects/{pid}?confirm=Doomed%20Too", headers=token_for(viewer_id, viewer_email))
+    assert denied.status_code in (403, 404)
+    assert (await client.get(f"{API}/projects/{pid}", headers=h)).status_code == 200
+    ok = await client.delete(f"{API}/projects/{pid}?confirm=Doomed%20Too&delete_tickets=true", headers=h)
+    assert ok.status_code == 200 and ok.json()["data"]["tickets_deleted"] == 1
+    async with container.pool.connection() as conn:
+        assert (await (await conn.execute("SELECT count(*) AS n FROM tickets WHERE id=%s", (uuid.UUID(t["id"]),))).fetchone())["n"] == 0

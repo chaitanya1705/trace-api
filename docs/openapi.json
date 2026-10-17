@@ -3429,6 +3429,70 @@
       }
     },
     "/api/v1/projects/{project_id}": {
+      "delete": {
+        "description": "Permanently delete a project and everything TRACE holds for it: its evidence graph, stored logs and deployments,\nconnections and their sealed credentials, repository bindings, jobs and members. The audit trail is kept.\nThe graph is cleared first, so a graph failure leaves the project intact instead of leaving orphaned evidence.",
+        "operationId": "delete_project_api_v1_projects__project_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's exact name, typed by the person deleting it",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "description": "The project's exact name, typed by the person deleting it",
+              "maxLength": 200,
+              "title": "Confirm",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Also delete tickets assigned to this project; otherwise they return to 'Need a project'",
+            "in": "query",
+            "name": "delete_tickets",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also delete tickets assigned to this project; otherwise they return to 'Need a project'",
+              "title": "Delete Tickets",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Project",
+        "tags": [
+          "projects"
+        ]
+      },
       "get": {
         "operationId": "get_project_api_v1_projects__project_id__get",
         "parameters": [
