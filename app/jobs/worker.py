@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -100,11 +101,23 @@ async def run_one(container: Container, owner: str, kinds: list[str] | None = No
     return True
 
 
+RECONCILE_SECONDS = 30.0
+
+
 async def run_forever(container: Container, poll_seconds: float = 1.0) -> None:
+    from app.jobs.reconcile import reconcile_graph_work
+
     owner = worker_id()
+    last_reconcile = float("-inf")
     while True:
         async with container.pool.connection() as conn:
             await queue.reap_expired(conn)
+        if time.monotonic() - last_reconcile >= RECONCILE_SECONDS:
+            last_reconcile = time.monotonic()
+            try:
+                await reconcile_graph_work(container)
+            except Exception:  # noqa: BLE001 - reconciling is best effort; the next pass tries again
+                log.exception("graph reconcile failed")
         worked = await run_one(container, owner)
         if not worked:
             await asyncio.sleep(poll_seconds)

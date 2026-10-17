@@ -68,17 +68,27 @@ def _t(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone(UTC) if v else None
 
 
-def _revisions_by_sha(repo: GraphRepository, project_id: str) -> dict[str, dict]:
+def revisions_by_sha(repo: GraphRepository, project_id: str) -> dict[str, dict]:
     with repo._driver.session(database=repo._db) as s:
         return {r["sha"]: {"id": r["id"], "repository_id": r["rep"]} for r in s.run(
             "MATCH (v:Entity:Revision {project_id: $p}) RETURN v.commit_sha AS sha, v.id AS id, v.repository_id AS rep", p=project_id)}
 
 
-def _symbols_named(repo: GraphRepository, project_id: str, revision_id: str, name: str) -> list[dict]:
+def symbols_named(repo: GraphRepository, project_id: str, revision_id: str, name: str) -> list[dict]:
     with repo._driver.session(database=repo._db) as s:
         return [r.data() for r in s.run(
             "MATCH (f:Entity:SourceFile {project_id: $p, revision_id: $r})-[:DEFINES]->(c:Entity:CodeSymbol {project_id: $p}) "
             "WHERE c.qualified_name = $n OR c.qualified_name ENDS WITH ('.' + $n) RETURN c.id AS id, c.qualified_name AS name, f.path AS path", p=project_id, r=revision_id, n=name)]
+
+
+def write_deployment_row(repo: GraphRepository, pid: str, d: dict, *, env_id: str, service_id: str, revs: dict[str, dict]) -> dict:
+    """One Postgres deployment row as a Deployment node. The revision is linked only when the commit is an indexed revision;
+    otherwise the mapping stays unknown. Shared by the on-demand sync and the evidence applier so both write identical nodes."""
+    rev = revs.get((d["commit_sha"] or "").lower())
+    state = (d["state"] or "").lower()
+    did = write_deployment(repo, pid, provider_id=d["provider_deployment_id"], service_id=service_id, environment_id=env_id, revision_id=rev["id"] if rev else None,
+                           event_time=d["created_at_provider"], status="ready" if state == "ready" else state or "unknown", exposure_status="unknown")
+    return {"id": did, "service_id": service_id, "environment_id": env_id, "revision_id": rev["id"] if rev else None, "sha": (d["commit_sha"] or "").lower()}
 
 
 def project(repo: GraphRepository, b: Bundle) -> SyncReport:
@@ -86,7 +96,7 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
     pid = b.project_id
     prj = I.project_node_id(pid)
     repo.write_nodes([prepare_node("Project", prj, pid, {"organization_id": b.organization_id, "name": b.project_name})])
-    revs = _revisions_by_sha(repo, pid)
+    revs = revisions_by_sha(repo, pid)
     env_ids: dict[str, str] = {}
     for e in b.environments:
         eid = I.environment_id(pid, e["environment_key"])
@@ -113,15 +123,11 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
         if ek not in env_ids or d["created_at_provider"] is None:
             rep.skip("deployment_without_environment_or_time")
             continue
-        sid = service_for(d["provider_project_id"], d["project_name"])
-        rev = revs.get((d["commit_sha"] or "").lower())
-        state = (d["state"] or "").lower()
-        did = write_deployment(repo, pid, provider_id=d["provider_deployment_id"], service_id=sid, environment_id=env_ids[ek], revision_id=rev["id"] if rev else None,
-                               event_time=d["created_at_provider"], status="ready" if state == "ready" else state or "unknown", exposure_status="unknown")
-        dep_info[d["provider_deployment_id"]] = {"id": did, "service_id": sid, "environment_id": env_ids[ek], "revision_id": rev["id"] if rev else None, "sha": (d["commit_sha"] or "").lower()}
+        info = write_deployment_row(repo, pid, d, env_id=env_ids[ek], service_id=service_for(d["provider_project_id"], d["project_name"]), revs=revs)
+        dep_info[d["provider_deployment_id"]] = info
         rep.deployments += 1
-        rep.deployments_with_revision += 1 if rev else 0
-        if not rev:
+        rep.deployments_with_revision += 1 if info["revision_id"] else 0
+        if not info["revision_id"]:
             rep.skip("deployment_revision_not_indexed")
 
     for t in b.tickets:
@@ -170,7 +176,7 @@ def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, d
         if dep["revision_id"] and e.get("event_name") == "operation.started" and e.get("operation"):
             ck = (dep["revision_id"], e["operation"])
             if ck not in located_cache:
-                located_cache[ck] = _symbols_named(repo, pid, dep["revision_id"], e["operation"])
+                located_cache[ck] = symbols_named(repo, pid, dep["revision_id"], e["operation"])
             hits = located_cache[ck]
             if len(hits) == 1:
                 man = revision_manifest(repo, pid, dep["revision_id"]) or ""

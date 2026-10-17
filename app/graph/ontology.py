@@ -116,6 +116,8 @@ GAP_KINDS = frozenset(
     {
         "source_disconnected", "permission_missing", "rate_limited", "stale", "partial_parse", "ambiguous_revision",
         "unsupported_language", "unresolved_dependency", "truncated_query", "insufficient_traffic", "missing_baseline", "redacted_content",
+        # Telemetry intake coverage (A10: "emit coverage gap for rejected/oversize/truncated input"). Added 2026-10-17, see docs/ONTOLOGY_GAPS.md.
+        "rejected_input", "oversize_input", "truncated_input", "unmapped_scope",
     }
 )
 IMPACT_CATEGORIES = frozenset({"direct_exposure", "potential_propagation", "observed_impact", "unknown"})
