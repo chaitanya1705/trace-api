@@ -189,13 +189,13 @@ async def search_logs(
     sql_from = "FROM evidence_inbox i LEFT JOIN environments e ON e.id = i.environment_id"
     rows = await (await conn.execute(
         f"SELECT i.id, i.event_time, i.ingested_at, COALESCE(i.event_time, i.ingested_at) AS sort_t, i.level, i.source, i.service_hint, i.message, i.request_id, i.status_code, i.deployment_id,"
-        f" e.environment_key, i.extra, i.graph_status {sql_from} WHERE {' AND '.join(where)} ORDER BY sort_t DESC, i.id DESC LIMIT %s", (*params, n + 1))).fetchall()
+        f" e.environment_key, i.extra, i.graph_status, i.provider {sql_from} WHERE {' AND '.join(where)} ORDER BY sort_t DESC, i.id DESC LIMIT %s", (*params, n + 1))).fetchall()
     more = len(rows) > n
     rows = rows[:n]
     total_all = (await (await conn.execute("SELECT count(*) AS n FROM evidence_inbox WHERE project_id=%s", (ctx.project_id,))).fetchone())["n"]
     matched = (await (await conn.execute(f"SELECT count(*) AS n {sql_from} WHERE {base}", params[: len(params) - (2 if cur else 0)])).fetchone())["n"]
     pend = (await (await conn.execute("SELECT count(*) AS n FROM evidence_inbox WHERE project_id=%s AND graph_status='pending'", (ctx.project_id,))).fetchone())["n"]
-    out = [{**{k: r[k] for k in ("id", "event_time", "ingested_at", "level", "source", "service_hint", "request_id", "status_code", "deployment_id", "environment_key", "extra", "graph_status")},
+    out = [{**{k: r[k] for k in ("id", "event_time", "ingested_at", "level", "source", "service_hint", "request_id", "status_code", "deployment_id", "environment_key", "extra", "graph_status", "provider")},
             "message": (r["message"] or "")[:2000]} for r in rows]
     nxt = encode_cursor({"t": rows[-1]["sort_t"].isoformat(), "id": str(rows[-1]["id"])}) if more else None
     return wrap(request, out, next_cursor=nxt,
