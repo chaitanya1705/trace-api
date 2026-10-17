@@ -1433,6 +1433,24 @@
         "title": "ServicesPut",
         "type": "object"
       },
+      "SourceIn": {
+        "properties": {
+          "environment_key": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Key"
+          }
+        },
+        "title": "SourceIn",
+        "type": "object"
+      },
       "StartIn": {
         "properties": {
           "draft_id": {
@@ -2354,6 +2372,48 @@
         "summary": "Reverify",
         "tags": [
           "connections"
+        ]
+      }
+    },
+    "/api/v1/ingest/events/{connection_id}": {
+      "post": {
+        "description": "Public on purpose: the application posts here. The HMAC-SHA256 signature is the authentication; the answer acknowledges durable receipt.",
+        "operationId": "ingest_events_api_v1_ingest_events__connection_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Events",
+        "tags": [
+          "log-source"
         ]
       }
     },
@@ -4128,6 +4188,97 @@
         "summary": "Put Log Scope",
         "tags": [
           "project-scope"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/log-source": {
+      "get": {
+        "operationId": "get_source_api_v1_projects__project_id__log_source_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Source",
+        "tags": [
+          "log-source"
+        ]
+      },
+      "post": {
+        "description": "Create (or reconfigure) the project's app-log source and generate its signing secret, shown once. Calling again rotates the secret.",
+        "operationId": "create_source_api_v1_projects__project_id__log_source_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Source",
+        "tags": [
+          "log-source"
         ]
       }
     },

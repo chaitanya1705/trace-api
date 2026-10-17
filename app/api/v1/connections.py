@@ -173,6 +173,7 @@ async def disconnect(connection_id: UUID, request: Request, org: OrgContext = De
     row = await load_authorized(conn, org, connection_id, Cap.MANAGE_CONNECTIONS)
     await conn.execute("UPDATE connections SET status='disconnected', last_error=NULL WHERE id=%s", (connection_id,))
     await conn.execute("UPDATE credential_versions SET status='revoked', ciphertext='\\x'::bytea WHERE connection_id=%s", (connection_id,))
+    await conn.execute("DELETE FROM connection_secrets WHERE connection_id=%s", (connection_id,))  # drain / ingest signing secrets
     cancelled = await queue.cancel_for_resource(conn, "connection", connection_id)
     await audit(conn, organization_id=row["organization_id"], project_id=row["project_id"], actor=org.principal.user_id,
                 action="connection.disconnect", target_type="connection", target_id=connection_id, request=request,
