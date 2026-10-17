@@ -82,16 +82,17 @@ async def run_one(container: Container, owner: str, kinds: list[str] | None = No
             return True  # lease taken over; the new owner reconciles
         async with container.pool.connection() as conn:
             await queue.complete(conn, job["id"], owner, result)
-    except JobCancelled:
+    except JobCancelled as e:
         async with container.pool.connection() as conn:
-            await queue.mark_cancelled(conn, job["id"], owner)
+            await queue.mark_cancelled(conn, job["id"], owner, result_ref=getattr(e, "result_ref", None))
     except PermanentJobError as e:
         async with container.pool.connection() as conn:
-            await queue.fail(conn, job["id"], owner, code=e.code, message=e.message, retryable=False)
+            await queue.fail(conn, job["id"], owner, code=e.code, message=e.message, retryable=False,
+                             result_ref=getattr(e, "result_ref", None))
     except TransientJobError as e:
         async with container.pool.connection() as conn:
             await queue.fail(conn, job["id"], owner, code=e.code, message=e.message, retryable=True,
-                             retry_after=e.retry_after)
+                             retry_after=e.retry_after, result_ref=getattr(e, "result_ref", None))
     except Exception as e:  # noqa: BLE001 - unknown failures are retried a bounded number of times
         log.exception("job crashed", extra={"job_id": str(job["id"]), "kind": job["kind"]})
         async with container.pool.connection() as conn:

@@ -17,7 +17,7 @@ from app.domain.connections import service as svc
 from app.domain.ingest.intake import finish
 from app.domain.ingest.store import env_lookup, store_rows
 from app.domain.ingest.vercel_logs import normalize_runtime
-from app.jobs.queue import PermanentJobError, TransientJobError
+from app.jobs.queue import JobCancelled, PermanentJobError, TransientJobError
 from app.jobs.worker import JobContext, handler
 
 MAX_SECONDS = 60
@@ -29,6 +29,32 @@ NOTE = ("Live capture is partial: Vercel's runtime-log stream delivers only some
 
 def _job_error(e: ProviderError) -> Exception:
     return (TransientJobError if e.retryable else PermanentJobError)(e.code, e.message)
+
+
+def _capture_totals(previous: dict | None, current: dict) -> dict:
+    """Keep stored-event accounting from earlier attempts when a capture retries."""
+    if not previous:
+        return current
+    return {
+        **current,
+        **{key: previous.get(key, 0) + current.get(key, 0) for key in ("read", "accepted", "duplicates")},
+        "seconds": previous.get("seconds", 0) + current.get("seconds", 0),
+        "listening_seconds": previous.get("listening_seconds", 0) + current.get("listening_seconds", 0),
+        "resources": [*previous.get("resources", []), *current.get("resources", [])],
+    }
+
+
+class _PartialResourceFailure(Exception):
+    def __init__(self, error: ProviderError, result: dict):
+        super().__init__(str(error))
+        self.error = error
+        self.result = result
+
+
+class _PartialResourceCancellation(JobCancelled):
+    def __init__(self, result: dict):
+        super().__init__()
+        self.result = result
 
 
 @handler("logs.capture")
@@ -74,13 +100,31 @@ async def capture_logs(ctx: JobContext) -> dict:
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
         # Cancellation and unexpected failures win over provider errors; lines already stored stay stored.
-        other = next((e for e in errors if not isinstance(e, ProviderError)), None)
+        if any(isinstance(e, JobCancelled) for e in errors):
+            resources += [r.result for r in errors if isinstance(r, (_PartialResourceFailure, _PartialResourceCancellation))]
+            resources += [r for r in results if not isinstance(r, BaseException)]
+            total = {k: sum(r[k] for r in resources) for k in ("read", "accepted", "duplicates")}
+            partial = {**total, "seconds": seconds, "listening_seconds": listen, "resources": resources, "note": NOTE}
+            cancelled = next(e for e in errors if isinstance(e, JobCancelled))
+            cancelled.result_ref = _capture_totals(ctx.job.get("result_ref"), partial)
+            raise cancelled
+        other = next((e for e in errors if not isinstance(e, (_PartialResourceFailure, ProviderError))), None)
         if other is not None:
             raise other
-        raise _job_error(errors[0]) from None
+        resources += [r.result for r in errors if isinstance(r, _PartialResourceFailure)]
+        resources += [r for r in results if not isinstance(r, BaseException)]
+        total = {k: sum(r[k] for r in resources) for k in ("read", "accepted", "duplicates")}
+        partial = {**total, "seconds": seconds, "listening_seconds": listen, "resources": resources, "note": NOTE}
+        provider_error = next((e.error for e in errors if isinstance(e, _PartialResourceFailure)), None)
+        if provider_error is None:
+            provider_error = errors[0]
+        job_error = _job_error(provider_error)
+        job_error.result_ref = _capture_totals(ctx.job.get("result_ref"), partial)
+        raise job_error from None
     resources += results
     total = {k: sum(r[k] for r in resources) for k in ("read", "accepted", "duplicates")}
-    return {**total, "seconds": seconds, "listening_seconds": listen, "resources": resources, "note": NOTE}
+    current = {**total, "seconds": seconds, "listening_seconds": listen, "resources": resources, "note": NOTE}
+    return _capture_totals(ctx.job.get("result_ref"), current)
 
 
 async def _follow(ctx: JobContext, row, client, envs, ppid: str, ek: str, dep: str, listen: float) -> dict:
@@ -99,10 +143,16 @@ async def _follow(ctx: JobContext, row, client, envs, ppid: str, ek: str, dep: s
                 await _flush(ctx.container, row, batch, counts, unusable)
                 batch, unusable = [], 0
             await ctx.check_cancel()
-    except ProviderError:
+    except JobCancelled:
         if batch or unusable:
             await _flush(ctx.container, row, batch, counts, unusable)
-        raise
+        raise _PartialResourceCancellation({"provider_project_id": ppid, "environment": ek, "deployment": dep,
+                                           "outcome": "partial", **counts}) from None
+    except ProviderError as e:
+        if batch or unusable:
+            await _flush(ctx.container, row, batch, counts, unusable)
+        raise _PartialResourceFailure(e, {"provider_project_id": ppid, "environment": ek, "deployment": dep,
+                                          "outcome": "partial", **counts}) from None
     if batch or unusable:
         await _flush(ctx.container, row, batch, counts, unusable)
     return {"provider_project_id": ppid, "environment": ek, "deployment": dep, "outcome": "captured", **counts}

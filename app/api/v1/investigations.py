@@ -29,7 +29,7 @@ from app.investigate.runner import TicketIn, investigate
 
 router = APIRouter(tags=["investigations"])
 
-_active: set[str] = set()
+_active: dict[str, str] = {}
 _lock = threading.Lock()
 
 
@@ -44,7 +44,7 @@ def _start(driver, db: str, settings, pid: str, ticket: TicketIn, control_run_id
                         api_key=settings.openai_api_key, model=settings.trace_model)
         finally:
             with _lock:
-                _active.discard(ticket.id)
+                _active.pop(ticket.id, None)
 
     threading.Thread(target=work, name=f"investigate-{control_run_id[:8]}", daemon=True).start()
 
@@ -63,10 +63,18 @@ async def start_investigation(ticket_id: UUID, request: Request, org: OrgContext
     pid, tid = str(row["project_id"]), str(ticket_id)
     existing = await asyncio.to_thread(R.active_run, driver[0], driver[1], pid, tid)
     with _lock:
-        if existing or tid in _active:
-            raise Conflict("An investigation is already running for this ticket.", code="run_active")
-        _active.add(tid)
+        active_run_id = existing or _active.get(tid)
+        if active_run_id:
+            raise Conflict("An investigation is already running for this ticket.", code="run_active",
+                           details={"run_id": active_run_id, "project_id": pid})
     control_run_id = str(uuid.uuid4())
+    with _lock:
+        # Re-check after generating the ID so simultaneous clicks cannot reserve two runs.
+        active_run_id = _active.get(tid)
+        if active_run_id:
+            raise Conflict("An investigation is already running for this ticket.", code="run_active",
+                           details={"run_id": active_run_id, "project_id": pid})
+        _active[tid] = control_run_id
     t = TicketIn(id=tid, title=row["title"], description=row["description"] or "", severity=row["severity"], environment_key=row["environment_key"],
                  service_hint=row["service_hint"], window_start=row["window_start"], window_end=row["window_end"],
                  opened_at=row["source_created_at"] or row["created_at"], revision_number=row["revision_number"])
