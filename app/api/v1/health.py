@@ -32,7 +32,7 @@ async def _check_neo4j(c: Container) -> str:
     if driver is None:
         return "not_configured"
     try:
-        await asyncio.wait_for(driver.verify_connectivity(), timeout=3)
+        await asyncio.wait_for(asyncio.to_thread(driver.verify_connectivity), timeout=3)  # the graph driver is synchronous
         return "ok"
     except Exception:  # noqa: BLE001
         return "unavailable"

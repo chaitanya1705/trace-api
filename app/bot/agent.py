@@ -98,5 +98,6 @@ def chat(driver, db: str, *, project_ids: list[str], scope_label: str, message: 
     rejected = [c for c in cited if c not in tools.seen]
     for c in rejected:  # an id the graph never returned is removed from the answer rather than shown as evidence
         final = final.replace(f"[{c}]", "")
+    final = re.sub(r"\s*(,\s*)+(?=[.,;])", "", final)  # punctuation left behind by removed ids
     return {"answer": final.strip(), "citations": [{"id": c, "caption": tools.seen[c], "kind": KINDS.get(c.split("_")[0], "other")} for c in ok],
             "rejected_citations": rejected, "queries": steps, "followups": followups}
