@@ -150,7 +150,7 @@ def _explore(driver, db: str, pid: str, view: str, label: str | None, limit: int
                     "cypher": f"MATCH p = (a {{project_id: {_lit(pid)}}})-[r:{rel_type}]->(b)\nRETURN p LIMIT {min(limit, 100)}"}
         if view == "label":
             nodes = [node_out(r["n"]) for r in s.run(
-                f"MATCH (n:Entity:`{label}` {{project_id: $p}}) RETURN n ORDER BY coalesce(n.event_time, n.created_at) DESC LIMIT $lim", p=pid, lim=limit + 1)]
+                f"MATCH (n:Entity:`{label}` {{project_id: $p}}) RETURN n ORDER BY CASE WHEN n:CodeSymbol THEN size([(n)--() | 1]) ELSE 0 END DESC, coalesce(n.event_time, n.created_at) DESC LIMIT $lim", p=pid, lim=limit + 1)]
             cypher = f"MATCH (n:{label} {{project_id: {_lit(pid)}}})\nRETURN n LIMIT {limit}"
         else:
             nodes = [node_out(r["n"]) for r in s.run(
