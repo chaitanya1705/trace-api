@@ -38,6 +38,19 @@ def deployment_row(dep: dict) -> dict[str, Any]:
     }
 
 
+async def upsert_deployment(conn, connection: dict, dep: dict, provider_project_id: str, env_ids: dict[str, UUID]) -> None:
+    """Store one Vercel deployment for the connection's project (idempotent on the provider id)."""
+    r = deployment_row(dep)
+    ek = map_environment(dep, set(env_ids))
+    await conn.execute(
+        "INSERT INTO deployments(organization_id,project_id,connection_id,environment_id,provider_deployment_id,provider_project_id,project_name,target,state,"
+        " commit_sha,git_ref,git_repository,revision_mapping,url,created_at_provider,ready_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        " ON CONFLICT (connection_id, provider_deployment_id) DO UPDATE SET state=EXCLUDED.state, ready_at=EXCLUDED.ready_at, environment_id=EXCLUDED.environment_id,"
+        " commit_sha=COALESCE(EXCLUDED.commit_sha, deployments.commit_sha), revision_mapping=EXCLUDED.revision_mapping, updated_at=now()",
+        (connection["organization_id"], connection["project_id"], connection["id"], env_ids.get(ek) if ek else None, r["id"], provider_project_id, r["name"], r["target"], r["state"],
+         r["sha"], r["ref"], r["repo"], r["mapping"], r["url"], r["created"], r["ready"]))
+
+
 @handler("deployments.sync")
 async def sync_deployments(ctx: JobContext) -> dict:
     c = ctx.container
@@ -48,7 +61,6 @@ async def sync_deployments(ctx: JobContext) -> dict:
             raise PermanentJobError("connection_gone", "Hosting connection is gone or not attached to a project")
         secret = await svc.active_secret(conn, c.vault, row)
         scoped = await (await conn.execute("SELECT DISTINCT provider_resource_id FROM log_scope_entries WHERE connection_id=%s", (cid,))).fetchall()
-        env_keys = {r["environment_key"] for r in await (await conn.execute("SELECT environment_key FROM environments WHERE project_id=%s", (row["project_id"],))).fetchall()}
         env_ids = {r["environment_key"]: r["id"] for r in await (await conn.execute("SELECT id, environment_key FROM environments WHERE project_id=%s", (row["project_id"],))).fetchall()}
     if not scoped:
         raise PermanentJobError("no_scope", "No Vercel projects are selected in Log scope, so there is nothing to read deployments for.")
@@ -66,15 +78,7 @@ async def sync_deployments(ctx: JobContext) -> dict:
                 raise PermanentJobError(e.code, e.message) from None
             async with c.pool.connection() as conn:
                 for d in deps:
-                    r = deployment_row(d)
-                    ek = map_environment(d, env_keys)
-                    await conn.execute(
-                        "INSERT INTO deployments(organization_id,project_id,connection_id,environment_id,provider_deployment_id,provider_project_id,project_name,target,state,"
-                        " commit_sha,git_ref,git_repository,revision_mapping,url,created_at_provider,ready_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-                        " ON CONFLICT (connection_id, provider_deployment_id) DO UPDATE SET state=EXCLUDED.state, ready_at=EXCLUDED.ready_at, environment_id=EXCLUDED.environment_id,"
-                        " commit_sha=COALESCE(EXCLUDED.commit_sha, deployments.commit_sha), revision_mapping=EXCLUDED.revision_mapping, updated_at=now()",
-                        (row["organization_id"], row["project_id"], cid, env_ids.get(ek) if ek else None, r["id"], sp["provider_resource_id"], r["name"], r["target"], r["state"],
-                         r["sha"], r["ref"], r["repo"], r["mapping"], r["url"], r["created"], r["ready"]))
+                    await upsert_deployment(conn, row, d, sp["provider_resource_id"], env_ids)
                 await request_graph_sync(conn, organization_id=row["organization_id"], project_id=row["project_id"])
                 await conn.commit()
             total += len(deps)

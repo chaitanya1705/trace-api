@@ -163,7 +163,8 @@ def _project_rows(repo: GraphRepository, b: EvidenceBundle, rep: ApplyReport) ->
         nodes.append(prepare_node("LogEvent", eid, pid, {
             "source_connection_id": source_connection(r), "source_record_key": r["source_record_key"], "ingested_at": r["ingested_at"], "origin": "telemetry",
             "content_hash": r["content_hash"], "redacted_content": _content(r), "severity": r["level"] or "unknown", "message": r["message"] or "(empty message)",
-            "event_time": r["event_time"], "request_id": r["request_id"], "environment_id": env_id, "service_id": svc_id,
+            # A re-linked event keeps the node it was first written with (immutable); only its edges are new.
+            "event_time": r["event_time"], "request_id": r["request_id"], "environment_id": env_id, "service_id": None if sc.get("relink") else svc_id,
             "origin_detail": _origin_detail(r), "source_locator": r["service_hint"],
         }))
         rep.events += 1
