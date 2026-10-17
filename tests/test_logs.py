@@ -1,7 +1,9 @@
 """Log intake, live capture, stored search. Provider traffic is FIXTURE data shaped like Vercel's documented formats."""
+import asyncio
 import hashlib
 import hmac
 import json
+import time
 
 import httpx
 import pytest
@@ -132,6 +134,50 @@ async def test_live_capture_stores_structured_runtime_logs(client, container, or
     while await worker.run_one(container, "t", KINDS):
         pass
     assert (await client.get(f"{API}/projects/{pid}/logs", headers=h)).json()["meta"]["coverage"]["stored_total"] == 2
+
+
+class ThreeProjects(RuntimeLogs):
+    """FIXTURE: an API project and a second function project with deployments, plus a static site that has none."""
+
+    def handler(self, req):
+        if req.url.host == "api.vercel.com" and req.url.path == "/v9/projects":
+            return httpx.Response(200, json={"projects": [{"id": p, "name": p} for p in ("prj_1", "prj_2", "prj_static")], "pagination": {}})
+        if req.url.host == "api.vercel.com" and req.url.path == "/v7/deployments":
+            pid = req.url.params.get("projectId")
+            deps = [] if pid == "prj_static" else [{"uid": f"dpl_{pid}", "projectId": pid, "target": "production", "readyState": "READY", "meta": {}}]
+            return httpx.Response(200, json={"deployments": deps, "pagination": {}})
+        return super().handler(req)
+
+
+async def test_capture_follows_every_scoped_deployment_for_the_whole_window(client, container, org, monkeypatch):
+    from app.jobs.handlers import logs as handler_mod
+
+    calls = []
+
+    async def fake_tail(client_, ppid, dep, *, seconds, max_lines=2000):
+        calls.append((ppid, dep, seconds))
+        await asyncio.sleep(0.3)  # both streams must be open at the same time, not one after another
+        if dep == "dpl_prj_1":
+            for line in RuntimeLogs.LINES:
+                yield line
+
+    monkeypatch.setattr(handler_mod.vc, "tail_runtime_logs", fake_tail)
+    pid, cid, h, _ = await setup(client, container, org, ThreeProjects())
+    scope = {"production": [{"provider_resource_id": p} for p in ("prj_1", "prj_2", "prj_static")]}
+    assert (await client.put(f"{API}/projects/{pid}/log-scope", headers=h, json={"environments": scope})).status_code == 200
+    assert (await client.post(f"{API}/projects/{pid}/logs/capture", headers=h, json={"seconds": 10})).status_code == 202
+    started = time.monotonic()
+    while await worker.run_one(container, "t", KINDS):
+        pass
+    elapsed = time.monotonic() - started
+
+    listen = 10 + handler_mod.DELIVERY_LAG_SECONDS
+    assert sorted(calls) == [("prj_1", "dpl_prj_1", listen), ("prj_2", "dpl_prj_2", listen)]   # full window each, plus the delivery lag
+    assert elapsed < 0.55                                                                     # concurrent: two 0.3 s streams, not 0.6 s
+    res = (await client.get(f"{API}/projects/{pid}/logs/status", headers=h)).json()["data"]["last_capture"]["result_ref"]
+    assert res["accepted"] == 2 and res["listening_seconds"] == listen
+    outcomes = {r["provider_project_id"]: (r["outcome"], r["accepted"]) for r in res["resources"]}
+    assert outcomes == {"prj_1": ("captured", 2), "prj_2": ("captured", 0), "prj_static": ("no_deployment", 0)}   # never a silent skip
 
 
 async def test_capture_needs_hosting_and_scope(client, container, org):

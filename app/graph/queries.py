@@ -136,6 +136,69 @@ TEMPLATES: dict[str, Template] = {
             frozenset({"project_id", "query", "revision_ids", "candidates", "limit"}),
             "full-text candidates, scope-filtered before leaving the graph layer; the global candidate pool is bounded, so truncation is reported",
         ),
+        Template(
+            "log_events_in_window", 1,
+            "MATCH (e:Entity:LogEvent)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
+            "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND ($include_info OR e.severity <> 'info') "
+            "AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) "
+            "OPTIONAL MATCH (e)-[:ASSOCIATED_WITH]->(d:Entity:Deployment {project_id: $project_id}) "
+            "RETURN e.id AS id, e.event_time AS event_time, e.severity AS severity, e.message AS message, e.source_locator AS route, "
+            "e.content_hash AS content_hash, d.id AS deployment_id ORDER BY e.event_time LIMIT $limit",
+            frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "include_info", "limit"}),
+            "log events of a service in a window with the deployment that was live when each happened",
+        ),
+        Template(
+            "code_located_by_events", 1,
+            "MATCH (e:Entity:LogEvent {project_id: $project_id})-[l:LOCATES]->(s:Entity:CodeSymbol {project_id: $project_id})<-[:DEFINES]-(f:Entity:SourceFile {project_id: $project_id}) "
+            "WHERE e.id IN $event_ids "
+            "RETURN s.id AS id, s.qualified_name AS name, s.kind AS kind, f.path AS path, f.revision_id AS revision_id, s.start_line AS start_line, "
+            "s.end_line AS end_line, count(DISTINCT e) AS events, collect(DISTINCT l.certainty) AS certainty, collect(DISTINCT e.id)[..5] AS sample_event_ids "
+            "ORDER BY events DESC, name LIMIT $limit",
+            frozenset({"project_id", "event_ids", "limit"}),
+            "code symbols that log events' stack frames resolve to at the revision live when they happened",
+        ),
+        Template(
+            "changes_into_revision", 1,
+            "MATCH (c:Entity:Change {project_id: $project_id})-[:AFTER_REVISION]->(r:Entity:Revision {id: $revision_id, project_id: $project_id}) "
+            "OPTIONAL MATCH (c)-[:BEFORE_REVISION]->(b:Entity:Revision {project_id: $project_id}) "
+            "OPTIONAL MATCH (c)-[m:MODIFIES]->(s:Entity:CodeSymbol {project_id: $project_id})<-[:DEFINES]-(f:Entity:SourceFile {project_id: $project_id}) "
+            "WITH c, b, collect({id: s.id, name: s.qualified_name, path: f.path, revision_id: f.revision_id, role: m.before_after_role, start_line: s.start_line, end_line: s.end_line}) AS modified "
+            "OPTIONAL MATCH (c)-[mf:MODIFIES]->(sf:Entity:SourceFile {project_id: $project_id}) "
+            "RETURN c.id AS id, c.kind AS kind, c.source_id AS ref, c.event_time AS event_time, b.id AS before_revision_id, b.commit_sha AS before_sha, modified, "
+            "collect({id: sf.id, path: sf.path, revision_id: sf.revision_id, role: mf.before_after_role}) AS files "
+            "ORDER BY c.event_time DESC LIMIT $limit",
+            frozenset({"project_id", "revision_id", "limit"}),
+            "changes that produced a revision and the symbols they modified on each side",
+        ),
+        Template(
+            "evidence_by_operation", 1,
+            "MATCH (e:Entity:EvidenceRecord)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
+            "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) "
+            "AND e.ingested_at <= datetime($cutoff) AND any(l IN labels(e) WHERE l = 'LogEvent') "
+            "RETURN e.severity AS severity, e.source_locator AS operation, count(*) AS events, collect(e.id)[..3] AS sample_ids, min(e.event_time) AS first, max(e.event_time) AS last "
+            "ORDER BY events DESC LIMIT $limit",
+            frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),
+            "log evidence grouped by severity and operation, so a large window is summarised without reading every row",
+        ),
+        Template(
+            "request_observations", 1,
+            "MATCH (e:Entity:EvidenceRecord)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
+            "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) "
+            "AND e.ingested_at <= datetime($cutoff) AND (e:RequestSpan OR e:Measurement) "
+            "RETURN e.id AS id, labels(e) AS labels, e.event_time AS event_time, e.redacted_content AS text, e.content_hash AS content_hash ORDER BY e.event_time LIMIT $limit",
+            frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),
+            "client-side request observations and run counts for a service in a window",
+        ),
+        Template(
+            "code_located_in_window", 1,
+            "MATCH (e:Entity:LogEvent {project_id: $project_id, service_id: $service_id, environment_id: $environment_id})-[l:LOCATES]->(s:Entity:CodeSymbol {project_id: $project_id})"
+            "<-[:DEFINES]-(f:Entity:SourceFile {project_id: $project_id}) "
+            "WHERE e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) "
+            "RETURN s.id AS id, s.qualified_name AS name, s.kind AS kind, f.path AS path, f.revision_id AS revision_id, s.start_line AS start_line, s.end_line AS end_line, "
+            "count(DISTINCT e) AS events, collect(DISTINCT l.certainty) AS certainty, collect(DISTINCT e.id)[..3] AS sample_event_ids ORDER BY events DESC, name LIMIT $limit",
+            frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),
+            "code symbols that evidence in the window locates, with how certain each mapping is",
+        ),
         *(_caller_paths(d) for d in range(1, MAX_HOPS + 1)),
     ]
 }

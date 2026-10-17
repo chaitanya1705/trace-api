@@ -71,7 +71,7 @@ async def test_assignment_enqueues_nothing_and_sets_owner(client, org, container
     got = a.json()["data"]
     assert got["project_id"] == pid and got["owner_user_id"] == str(org["owner_id"]) and got["project_name"].startswith("Shop")
     assert await _jobs(container, org) == before                     # assignment started no run (D-01)
-    assert got["investigate"]["reason"] == "The investigator is not available in this build yet."   # visibly unavailable + reason
+    assert got["investigate"] == {"available": True, "reason": None}   # an assigned open ticket may be investigated, but only by an explicit action
     for _ in range(2):                                               # refresh / open also enqueue nothing
         await client.get(f"{API}/tickets", headers=h)
         await client.get(f"{API}/tickets/{t['id']}", headers=h)

@@ -21,7 +21,7 @@ from app.storage.secrets import Sealed, Vault, mask
 
 # provider -> (kind, allowed auth methods)
 PROVIDERS = {"github": ("code", {"github_app", "github_pat"}), "vercel": ("hosting", {"vercel_token", "vercel_integration"}),
-             "generic": ("hosting", {"signed_webhook"}), "postgres": ("database", {"postgres_dsn"})}
+             "generic": ("telemetry", {"signed_webhook"}), "postgres": ("database", {"postgres_dsn"})}
 SECRET_METHODS = {"github_pat", "vercel_token", "postgres_dsn"}
 
 
@@ -49,7 +49,7 @@ def providers_catalog(s: Settings) -> list[dict[str, Any]]:
             {"id": "postgres_dsn", "label": "Postgres connection string", "recommended": True, "available": True,
              "reason": "TRACE reads schema metadata only (tables, columns, keys, indexes), in a read-only session. Prefer a read-only role."}],
          "operations": ["read_schema"], "writes": []},
-        {"provider": "generic", "kind": "hosting", "descriptor_version": 1, "auth_modes": [
+        {"provider": "generic", "kind": "telemetry", "descriptor_version": 1, "auth_modes": [
             {"id": "signed_webhook", "label": "Signed webhook / upload", "recommended": True, "available": True, "reason": None}],
          "operations": ["ingest_events"], "writes": []},
     ]

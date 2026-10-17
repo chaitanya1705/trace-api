@@ -20,6 +20,12 @@ class Settings(BaseSettings):
 
     trace_env: Literal["development", "test", "production"] = "development"
 
+    # POC deployments only: lets AUTH_MODE=off/local run with TRACE_ENV=production (no login at all). Anyone who can reach the API then has
+    # full access, so this must be an explicit, visible choice and is reported by /health/ready.
+    allow_open_access: bool = False
+    # Public address of the web app (where the GitHub install flow returns the browser). Falls back to the first allowed origin.
+    trace_web_origin: str | None = None
+
     # Identity: 'supabase' (production), 'local' (dev HS256 tokens) or 'off' (dev: no login, fixed dev user)
     auth_mode: Literal["supabase", "local", "off"] = "supabase"
     local_auth_secret: str = "dev-only-change-me-dev-only-change-me"
@@ -123,24 +129,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _production_requirements(self) -> Settings:
         if self.trace_env == "production":
-            missing = [
-                n
-                for n in (
-                    "database_url",
-                    "supabase_url",
-                    "supabase_jwks_url",
-                    "neo4j_uri",
-                    "neo4j_username",
-                    "neo4j_password",
-                    "openai_api_key",
-                    "trace_secret_key",
-                )
-                if not getattr(self, n)
-            ]
+            required = ["database_url", "neo4j_uri", "neo4j_username", "neo4j_password", "openai_api_key", "trace_secret_key"]
+            if self.auth_mode == "supabase":
+                required += ["supabase_url", "supabase_jwks_url"]
+            missing = [n for n in required if not getattr(self, n)]
             if missing:
                 raise ValueError("missing required settings: " + ", ".join(m.upper() for m in missing))
-        if self.auth_mode in ("local", "off") and self.trace_env == "production":
-            raise ValueError("auth_mode local/off is not allowed in production")
+            if self.auth_mode in ("local", "off") and not self.allow_open_access:
+                raise ValueError("auth_mode local/off is not allowed in production (set ALLOW_OPEN_ACCESS=true to accept open access)")
         if self.graph_default_hops > self.graph_max_hops:
             raise ValueError("graph_default_hops exceeds graph_max_hops")
         return self

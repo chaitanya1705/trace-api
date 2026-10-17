@@ -46,8 +46,23 @@ Also closed: GitHub source retrieval at an exact commit (`app/connectors/github_
 | Gap | Spec | Task |
 |---|---|---|
 | Real Graphify adapter and output schema validation (the built-in extractor is a stand-in; TypeScript parsing is regex-based, so nested/complex syntax can be missed) | O7 | T-001 / T-007 |
-| Postgres outbox -> graph applier with receipts and reconciliation; project/service/environment nodes are not yet mirrored from the control plane | A2 | T-006 |
 | Ranking, event-hash dedupe and diversity across retrieved items | O8 | T-011 |
 | Late-evidence rule and replay without model calls | O6 | T-012 |
 | Fixtures not yet written: late/out-of-order ingest through the real ingestion path, source path mapping from stack traces, insufficient recovery traffic | O12 | T-009 / T-019 |
 | Retention and backup behaviour | O12 | T-024 |
+
+## Closed in the third pass (2026-10-17): evidence intake -> graph (T-009, T-006)
+| Gap | Now |
+|---|---|
+| Postgres outbox -> graph applier with receipts and reconciliation | `app/graph/outbox.py` (leased claims, ack after the graph commit, project scope mirrored from current state), `app/jobs/reconcile.py` (finds due/abandoned work, queues the appliers; runs from the worker loop every 30 s) |
+| Ingested evidence never reached Neo4j | `app/graph/apply_evidence.py` + `app/domain/ingest/graph_apply.py`: `evidence_inbox` rows become immutable LogEvent nodes with deterministic project-scoped ids; `graph_status` is `applied` only after the Neo4j commit |
+| EvidenceGap kinds for rejected / oversize / truncated input (A10) | Vocabulary extended with `rejected_input`, `oversize_input`, `truncated_input`, `unmapped_scope` (O11 updated in `TRACE/ontology.md`); written from `ingestion_batches` once per batch |
+| Late / out-of-order evidence (O6) through the real ingestion path | `event_time`, `ingested_at` (receipt) and `created_at` (graph write) are three separate fields; templates filter `ingested_at <= cutoff`, so earlier runs and their immutable RetrievalManifests are unaffected (tests/test_evidence_graph_neo4j.py) |
+
+Rules the applier keeps: environment from the row only (NULL = unknown, no edge); service only from a stored deployment, the Log scope or the
+source's declared `service_key`; Deployment node only when TRACE has a deployment row; revision only when that commit is an indexed Revision;
+an operation name locates code only when exactly one symbol of the deployed revision carries it (`name_match`).
+
+Still open here: rows applied before a revision was indexed are not re-located afterwards (no re-locate job yet); the gap nodes are not yet read
+by the investigator (no template); `Service` nodes derived from a hosting project and `Service` nodes from the project's logical services are
+different nodes (pre-existing in `app/graph/sync.py`).

@@ -47,6 +47,7 @@ async def ready(response: Response, c: Container = Depends(get_container)) -> di
         "auth": "ok" if (c.verifier or s.auth_mode == "off") else "not_configured",
         "vault": "ok" if c.vault else "not_configured",
         "model": "configured" if s.openai_api_key else "not_configured",
+        "access": "open (no login: anyone who can reach this API has full access)" if s.auth_mode == "off" else "authenticated",
     }
     required = ["database", "auth", "vault"] + (["graph"] if s.trace_env == "production" else [])
     ok = all(parts[k] == "ok" for k in required)

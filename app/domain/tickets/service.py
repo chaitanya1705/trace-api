@@ -18,7 +18,7 @@ EDIT_ORG_ROLES = ("owner", "admin", "investigator")
 
 # Becomes true when the orchestrator (T-012) exists. Until then the Investigate action is visibly unavailable (PRD:
 # later-phase actions show a reason) rather than creating runs that nothing will ever execute.
-INVESTIGATOR_AVAILABLE = False
+INVESTIGATOR_AVAILABLE = True
 
 
 def investigate_state(row: dict) -> dict[str, Any]:
