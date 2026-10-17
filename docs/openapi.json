@@ -1446,6 +1446,18 @@
               }
             ],
             "title": "Environment Key"
+          },
+          "service_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Key"
           }
         },
         "title": "SourceIn",
@@ -3949,7 +3961,7 @@
     },
     "/api/v1/projects/{project_id}/graph/sync": {
       "post": {
-        "description": "Load the project's deployments and runtime evidence from the control plane into the evidence graph (idempotent).",
+        "description": "Load the project's deployments, PulseLab ticket evidence and ingested log evidence from the control plane into the evidence graph\n(idempotent). Ingested logs are normally applied by the worker as they arrive; this applies whatever is due now (bounded) and reports what\nthe graph has acknowledged. `retry_failed=true` re-queues rows the graph refused earlier.",
         "operationId": "sync_evidence_api_v1_projects__project_id__graph_sync_post",
         "parameters": [
           {
@@ -3960,6 +3972,16 @@
               "format": "uuid",
               "title": "Project Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retry_failed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Retry Failed",
+              "type": "boolean"
             }
           }
         ],
