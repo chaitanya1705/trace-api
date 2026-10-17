@@ -13,6 +13,8 @@ from app.graph.queries import escape_lucene
 MAX_ROWS = 25
 MAX_TEXT = 700
 # Browser observations are retained for provenance and diagnostics, but are not investigator evidence.
+# Optional look-back on event time, in minutes (None = all time).
+TIME = "AND ($since IS NULL OR e.event_time >= datetime() - duration({minutes: $since})) "
 TRUSTED_OBSERVATION = "NOT (coalesce(e.origin_detail, '') CONTAINS '(untrusted browser observation)')"
 
 
@@ -37,6 +39,14 @@ def _lim(n: Any, default: int = 15) -> int:
         return max(1, min(int(n), MAX_ROWS))
     except (TypeError, ValueError):
         return default
+
+
+def _minutes(n: Any) -> int | None:
+    """A look-back in minutes (1 minute to 30 days), or None for all time."""
+    try:
+        return max(1, min(int(n), 43200)) if n not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _primary(labels: list[str]) -> str:
@@ -138,36 +148,42 @@ class GraphTools:
                 "hypotheses": hyps, "claims": claims, "gaps": gaps}
 
     # ---- runtime evidence ---------------------------------------------------------------------------------------------
-    def error_summary(self, service: str | None = None, severity: str | None = None) -> dict:
-        """Log evidence grouped by service, severity and operation, newest first. Counts come from the graph, not from the model."""
+    def error_summary(self, service: str | None = None, severity: str | None = None, since_minutes: int | None = None) -> dict:
+        """Log evidence grouped by service, severity and operation, newest first. Events not linked to a service are counted as
+        "unlinked" rather than dropped. Counts come from the graph, not from the model."""
+        since = _minutes(since_minutes)
         rows = self._run(
-            "MATCH (e:Entity:LogEvent)-[:OBSERVED_ON]->(s:Entity:Service) WHERE e.project_id IN $pids AND s.project_id = e.project_id "
-            f"AND {TRUSTED_OBSERVATION} AND ($service IS NULL OR toLower(s.name) CONTAINS toLower($service)) AND ($sev IS NULL OR e.severity = $sev) "
-            "RETURN s.name AS service, e.severity AS severity, e.source_locator AS operation, count(*) AS events, "
-            "min(e.event_time) AS first, max(e.event_time) AS last, collect(e.id)[..3] AS sample_ids "
+            f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} AND ($sev IS NULL OR e.severity = $sev) {TIME}"
+            "OPTIONAL MATCH (e)-[:OBSERVED_ON]->(s:Entity:Service) WITH e, coalesce(s.name, 'unlinked') AS service "
+            "WHERE $service IS NULL OR toLower(service) CONTAINS toLower($service) "
+            "RETURN service, e.severity AS severity, e.source_locator AS operation, count(*) AS events, "
+            "min(e.event_time) AS first, max(e.event_time) AS last, collect(e.id)[..3] AS sample_ids, collect(DISTINCT e.request_id)[..5] AS request_ids "
             "ORDER BY CASE e.severity WHEN 'fatal' THEN 0 WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warn' THEN 2 WHEN 'warning' THEN 2 ELSE 3 END, events DESC LIMIT 30",
-            service=service, sev=severity)
+            service=service, sev=severity, since=since)
         for r in rows:
             for i in r["sample_ids"]:
                 self.seen[i] = f"{r['severity']} {r['operation']}"
             r["first"], r["last"] = _v(r["first"]), _v(r["last"])
-        totals = self._run(f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} RETURN e.severity AS severity, count(*) AS events ORDER BY events DESC")
-        return {"severity_totals": totals, "groups": rows,
-                "note": "Only error/fatal/critical events indicate failures. info events are normal operation."}
+        totals = self._run(f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} {TIME}"
+                           "RETURN e.severity AS severity, count(*) AS events, max(e.event_time) AS newest ORDER BY events DESC", since=since)
+        return {"window": f"last {since} minutes" if since else "all time", "severity_totals": [{**t, "newest": _v(t["newest"])} for t in totals], "groups": rows,
+                "note": "Only error/fatal/critical events indicate failures. info events are normal operation. Events reach the graph a few seconds after the app sends them."}
 
-    def recent_events(self, severity: str | None = None, text: str | None = None, limit: int = 12) -> dict:
+    def recent_events(self, severity: str | None = None, text: str | None = None, limit: int = 12, since_minutes: int | None = None) -> dict:
         rows = self._run(
-            f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} AND ($sev IS NULL OR e.severity = $sev) "
+            f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} AND ($sev IS NULL OR e.severity = $sev) {TIME}"
             "AND ($text IS NULL OR toLower(coalesce(e.redacted_content, e.message)) CONTAINS toLower($text)) "
             "OPTIONAL MATCH (e)-[:OBSERVED_ON]->(s:Entity:Service) OPTIONAL MATCH (e)-[:ASSOCIATED_WITH]->(d:Entity:Deployment) "
             "RETURN e.id AS id, e.severity AS severity, e.event_time AS event_time, e.message AS caption, e.source_locator AS operation, e.request_id AS request_id, "
             "left(e.redacted_content, 400) AS content, s.name AS service, d.provider_id AS deployment ORDER BY e.event_time DESC LIMIT $limit",
-            sev=severity, text=text, limit=_lim(limit, 12))
+            sev=severity, text=text, limit=_lim(limit, 12), since=_minutes(since_minutes))
         return {"events": self._note([{**r, "event_time": _v(r["event_time"])} for r in rows])}
 
     def request_trace(self, request_id: str) -> dict:
         rows = self._run(f"MATCH (e:Entity:LogEvent {{request_id: $rid}}) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} "
-                         "RETURN e.id AS id, e.severity AS severity, e.event_time AS event_time, e.message AS caption, left(e.redacted_content, 300) AS content "
+                         "OPTIONAL MATCH (e)-[:OBSERVED_ON]->(s:Entity:Service) OPTIONAL MATCH (e)-[:ASSOCIATED_WITH]->(d:Entity:Deployment) "
+                         "RETURN e.id AS id, e.severity AS severity, e.event_time AS event_time, e.message AS caption, e.source_locator AS operation, "
+                         "coalesce(s.name, 'unlinked') AS service, d.provider_id AS deployment, left(e.redacted_content, 300) AS content "
                          "ORDER BY e.event_time LIMIT 40", rid=request_id)
         return {"events": self._note([{**r, "event_time": _v(r["event_time"])} for r in rows])}
 
@@ -219,11 +235,11 @@ TOOL_SPECS: list[dict] = [
     {"name": "list_tickets", "description": "Tickets with their investigation status and finding summary. Leave status empty to list all; use it only when the user names a status.", "parameters": {"status": {"type": "string", "enum": ["open", "resolved", "closed"]}}},
     {"name": "get_investigation", "description": "An investigation run: finding, claims with citations, hypotheses and their assessment, evidence gaps. Takes the run id (run_...).",
      "parameters": {"run_id": {"type": "string"}}, "required": ["run_id"]},
-    {"name": "error_summary", "description": "Runtime log evidence grouped by service, severity and operation with counts and time ranges. Best first step for 'what is failing'.",
-     "parameters": {"service": {"type": "string"}, "severity": {"type": "string", "enum": ["error", "warn", "info", "fatal"]}}},
-    {"name": "recent_events", "description": "Newest log events, optionally by severity or a text fragment.",
-     "parameters": {"severity": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}}},
-    {"name": "request_trace", "description": "Every log event of one request id, in order.", "parameters": {"request_id": {"type": "string"}}, "required": ["request_id"]},
+    {"name": "error_summary", "description": "Runtime log evidence grouped by service, severity and operation with counts, first/last time and sample request ids. Best first step for 'what is failing'. since_minutes limits it to a recent period.",
+     "parameters": {"service": {"type": "string"}, "severity": {"type": "string", "enum": ["error", "warn", "info", "fatal"]}, "since_minutes": {"type": "integer"}}},
+    {"name": "recent_events", "description": "Newest log events (time, severity, operation, service, request id, deployment), optionally by severity, a text fragment or the last N minutes.",
+     "parameters": {"severity": {"type": "string"}, "text": {"type": "string"}, "limit": {"type": "integer"}, "since_minutes": {"type": "integer"}}},
+    {"name": "request_trace", "description": "Every log event of one request id, in order, with operation, service and deployment: what that request did step by step.", "parameters": {"request_id": {"type": "string"}}, "required": ["request_id"]},
     {"name": "deployments", "description": "Deployments with status, time, service and the commit they ran (commit unknown stays unknown).", "parameters": {"limit": {"type": "integer"}}},
     {"name": "code_for_event", "description": "Code symbols (file, lines, certainty) that a log event's stack trace resolves to.", "parameters": {"event_id": {"type": "string"}}, "required": ["event_id"]},
     {"name": "search_code", "description": "Full-text search over indexed source code; returns excerpts with file and line range.", "parameters": {"query": {"type": "string"}}, "required": ["query"]},

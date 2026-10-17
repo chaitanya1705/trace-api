@@ -142,8 +142,10 @@ def run_detail(driver, db: str, project_id: str, control_run_id: str) -> dict | 
 
     cov_of = {t["name"]: t["coverage"] for t in tools_out}
     deps = (cov_of.get("deployments_in_window") or {}).get("deployments", [])
-    logs = cov_of.get("log_events_in_window") or {}
-    code = cov_of.get("code_located_by_events") or {}
+    # Error signatures (pattern, first/last seen, before/after the deploy) are recorded on the evidence_by_operation step;
+    # log_events_in_window only carries a summary. Reading the wrong one left the Timeline without its Failures lane.
+    logs = cov_of.get("evidence_by_operation") or {}
+    code = cov_of.get("code_located_in_window") or {}
     changes = cov_of.get("changes_into_revision") or {}
     blast = cov_of.get("callers_2hop") or {}
     gap_kinds = {g["kind"] for g in gaps}

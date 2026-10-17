@@ -137,10 +137,27 @@ async def test_browser_observation_keeps_untrusted_provenance_without_backend_ru
     recent = tools.recent_events(severity="error")["events"]
     assert [row["id"] for row in recent] == [I.evidence_id(pid, cid, "evt-2")]
     summary = tools.error_summary()
-    assert summary["severity_totals"] == [{"severity": "error", "events": 1}]
+    assert [(t["severity"], t["events"]) for t in summary["severity_totals"]] == [("error", 1)]
     assert sum(row["events"] for row in summary["groups"]) == 1
     overview = tools.graph_overview()["log_events"]
     assert overview["total"] == 1 and overview["errors"] == 1
+
+
+async def test_bot_counts_unlinked_events_and_filters_by_recent_minutes(client, container, org, driver, neo):
+    pid, cid, secret, _ = await make_source(client, org, name="BotLogs")
+    neo.append(pid)
+    now = datetime.now(UTC)
+    await push(client, cid, secret, [ev(1, level="ERROR", at=now - timedelta(minutes=2), rid="req-new"), ev(2, level="ERROR", at=now - timedelta(hours=3)),
+                                     ev(3, at=now - timedelta(minutes=1), rid="req-new")])
+    await apply(container, org, pid)
+    tools = GraphTools(driver, _creds()[3], [pid])
+    every = tools.error_summary(severity="error")
+    assert every["window"] == "all time" and sum(g["events"] for g in every["groups"]) == 2 and {g["service"] for g in every["groups"]} == {"unlinked"}
+    recent = tools.error_summary(severity="error", since_minutes=15)
+    assert recent["window"] == "last 15 minutes" and sum(g["events"] for g in recent["groups"]) == 1 and recent["groups"][0]["request_ids"] == ["req-new"]
+    assert [e["id"] for e in tools.recent_events(since_minutes=15)["events"]] == [I.evidence_id(pid, cid, "evt-3"), I.evidence_id(pid, cid, "evt-1")]
+    trace = tools.request_trace("req-new")["events"]
+    assert [e["severity"] for e in trace] == ["error", "info"] and trace[0]["service"] == "unlinked" and trace[0]["operation"]
 
 
 async def test_indexed_revision_links_the_deployment_and_an_unambiguous_operation_locates_code(client, container, org, driver, neo):

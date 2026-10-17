@@ -142,6 +142,21 @@ def test_investigation_runs_every_step_cites_only_retrieved_evidence_and_records
     assert cited <= retrieved | {e["id"] for e in d["evidence"]}
 
 
+def test_timeline_and_coverage_show_the_errors_the_run_read(repo, pid, seeded, driver):
+    b = _bundle(pid, seeded)
+    events = b.tickets[0]["payload"]["backend_events"]
+    err = {**events[0]["event"], "event_id": "e-err", "level": "ERROR", "message": "Unhandled exception while processing request", "error_type": "AttributeError",
+           "event_name": "request.failed", "event_time": (datetime.fromisoformat(events[0]["event"]["event_time"]) + timedelta(seconds=5)).isoformat()}
+    events.append({"event": err, "origin": "fixture_backend"})
+    S.project(repo, b)
+    run_id = str(uuid.uuid4())
+    runner.investigate(driver, _creds()[3], project_id=pid, ticket=_ticket(pid), control_run_id=run_id, actor_id="t", api_key=None, model="none")
+    d = _detail(driver, pid, run_id)
+    failures = [e for e in d["timeline"] if e["lane"] == "Failures"]
+    assert failures and failures[0]["label"].startswith("Unhandled exception while processing request") and failures[0]["at"]
+    assert dict(d["coverage"])["Error pattern and timing"] == "good"
+
+
 def test_a_second_run_is_a_new_immutable_run_not_an_overwrite(repo, pid, seeded, driver):
     S.project(repo, _bundle(pid, seeded))
     t = _ticket(pid)
