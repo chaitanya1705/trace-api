@@ -81,7 +81,7 @@ def parse_export(doc: Any) -> TicketFields:
         external_id=str(ext) if ext is not None else None,
         title=str(title).strip()[:300],
         description=str(_first(t, "description", "details") or ""),
-        severity=sev if sev in SEVERITIES else None,
+        severity=sev if isinstance(sev, str) and sev in SEVERITIES else None,
         environment_key=(str(_first(t, "environment", "environment_label", "env") or _first(target, "environment") or "").strip().lower() or None),
         service_hint=(str(_first(t, "affected_operation", "operation", "service") or "").strip() or None),
         source_created_at=parse_time(_first(t, "created_at")) or start,

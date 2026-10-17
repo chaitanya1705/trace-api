@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from psycopg import AsyncConnection
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.audit import audit
 from app.auth.authz import Cap
@@ -23,6 +23,7 @@ from app.envelope import wrap
 from app.errors import Conflict, TraceError, Unprocessable
 from app.jobs.triggers import request_graph_sync
 from app.pagination import clamp_limit, decode_cursor, encode_cursor
+from app.redact import redact_text
 
 router = APIRouter(tags=["tickets"])
 Severity = Literal["SEV-1", "SEV-2", "SEV-3", "SEV-4"]
@@ -57,6 +58,20 @@ class TicketPatch(BaseModel):
     description: str | None = Field(None, max_length=20000)
     window_start: datetime | None = None
     window_end: datetime | None = None
+
+
+class PulseLabReview(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(..., max_length=20000)
+    severity: Severity | None = Field(...)
+    environment_key: str | None = Field(..., max_length=40)
+    service_hint: str | None = Field(..., max_length=200)
+    project_id: UUID | None = Field(...)
+
+
+class PulseLabConfirmation(BaseModel):
+    export: dict[str, Any]
+    fields: PulseLabReview
 
 
 def _vis(org: OrgContext) -> tuple[str, list]:
@@ -150,6 +165,75 @@ async def import_pulselab(
     await svc.require_create_rights(conn, org, project_id)
     row, outcome = await svc.upsert_ticket(conn, org, source="pulselab", f=f, payload=doc, project_id=project_id, request=request)
     await request_graph_sync(conn, organization_id=org.organization_id, project_id=row["project_id"])
+    await conn.commit()
+    return await _ticket_response(request, conn, row, outcome)
+
+
+@router.post("/tickets/import/pulselab/preview")
+async def preview_pulselab(request: Request):
+    """Parse a reporter-supplied incident export for review without writing a ticket or graph job."""
+    raw = await request.body()
+    if len(raw) > IMPORT_MAX_BYTES:
+        raise PayloadTooLarge("Export is larger than 5 MB")
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        raise Unprocessable("Body is not valid JSON", code="invalid_export") from None
+    f = parse_export(doc)
+    return wrap(request, {
+        "fields": {
+            "title": f.title,
+            "description": redact_text(f.description),
+            "severity": f.severity,
+            "environment_key": f.environment_key,
+            "service_hint": f.service_hint,
+            "project_id": None,
+        },
+        "provenance": "Reporter-supplied PulseLab incident export",
+    })
+
+
+@router.post("/tickets/import/pulselab/confirm")
+async def confirm_pulselab(
+    request: Request, org: OrgContext = Depends(org_context), conn: AsyncConnection = Depends(get_conn),
+):
+    """Store an incident export only after the caller submits the fields reviewed in New Ticket."""
+    raw = await request.body()
+    if len(raw) > IMPORT_MAX_BYTES:
+        raise PayloadTooLarge("Export is larger than 5 MB")
+    try:
+        data = json.loads(raw)
+        confirmed = PulseLabConfirmation.model_validate(data)
+    except (ValueError, ValidationError):
+        raise Unprocessable("Invalid PulseLab confirmation", code="invalid_export") from None
+    f = parse_export(confirmed.export)
+    reviewed = confirmed.fields
+    f.title = reviewed.title.strip()
+    f.description = reviewed.description
+    f.severity = reviewed.severity
+    f.environment_key = (reviewed.environment_key or "").strip().lower() or None
+    f.service_hint = (reviewed.service_hint or "").strip() or None
+    existing = None
+    if f.external_id:
+        match = await (await conn.execute(
+            "SELECT id FROM tickets WHERE organization_id=%s AND source=%s AND external_id=%s",
+            (org.organization_id, "pulselab", f.external_id),
+        )).fetchone()
+        if match is not None:
+            existing = await svc.get_visible(conn, org, match["id"], lock=True)
+    prior_project_id = existing["project_id"] if existing is not None else None
+    if existing is None:
+        row, outcome = await svc.upsert_ticket(conn, org, source="pulselab", f=f, payload=confirmed.export,
+                                               project_id=reviewed.project_id, request=request)
+    else:
+        row, outcome = await svc.update_reviewed_ticket(
+            conn, org, existing, title=f.title, description=f.description, severity=f.severity,
+            environment_key=f.environment_key, service_hint=f.service_hint, project_id=reviewed.project_id,
+            request=request,
+        )
+    await request_graph_sync(conn, organization_id=org.organization_id, project_id=row["project_id"])
+    if prior_project_id is not None and prior_project_id != row["project_id"]:
+        await request_graph_sync(conn, organization_id=org.organization_id, project_id=prior_project_id)
     await conn.commit()
     return await _ticket_response(request, conn, row, outcome)
 
