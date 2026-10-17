@@ -41,7 +41,7 @@ async def _setup(client, org, name="Shop"):
 
 async def _jobs(container, org):
     async with container.pool.connection() as conn:
-        return (await (await conn.execute("SELECT count(*) AS n FROM jobs WHERE organization_id=%s", (org["id"],))).fetchone())["n"]
+        return (await (await conn.execute("SELECT count(*) AS n FROM jobs WHERE organization_id=%s AND kind <> 'graph.sync'", (org["id"],))).fetchone())["n"]
 
 
 async def test_manual_ticket_lists_views_and_empty_vs_no_match(client, org):
@@ -82,6 +82,30 @@ async def test_assignment_enqueues_nothing_and_sets_owner(client, org, container
     assert closed.json()["data"]["status"] == "resolved"
     res = (await client.get(f"{API}/tickets?view=resolved", headers=h)).json()
     assert [x["id"] for x in res["data"]] == [t["id"]] and res["meta"]["coverage"]["counts"]["open"] == 0
+
+
+async def test_investigate_returns_active_run_for_repeat_click(client, org, container, monkeypatch):
+    from app.api.v1 import investigations
+
+    pid, h = await _setup(client, org)
+    t = (await client.post(f"{API}/tickets", headers=h, json={"title": "Investigate explicitly"})).json()["data"]["ticket"]
+    assigned = await client.patch(f"{API}/tickets/{t['id']}", headers=h, json={"version": t["version"], "project_id": pid})
+    assert assigned.status_code == 200
+
+    container.extras["neo4j"] = object()
+    monkeypatch.setattr(investigations.R, "active_run", lambda *_args: None)
+    monkeypatch.setattr(investigations, "_start", lambda *_args: None)
+    investigations._active.pop(t["id"], None)
+    first = await client.post(f"{API}/tickets/{t['id']}/investigate", headers=h, json={})
+    assert first.status_code == 202
+    run = first.json()["data"]
+
+    repeated = await client.post(f"{API}/tickets/{t['id']}/investigate", headers=h, json={})
+
+    assert repeated.status_code == 409
+    assert repeated.json()["error"]["code"] == "run_active"
+    assert repeated.json()["error"]["details"] == {"run_id": run["run_id"], "project_id": pid}
+    investigations._active.pop(t["id"], None)
 
 
 async def test_pulselab_import_maps_redacts_dedupes_and_revises(client, org):

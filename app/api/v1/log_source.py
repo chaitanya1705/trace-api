@@ -50,6 +50,32 @@ def signature_ok(secret: str, body: bytes, header: str | None) -> bool:
     return hmac.compare_digest("sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest(), header.strip().lower())
 
 
+async def _read_signed_body(request: Request, max_bytes: int, secret: str) -> tuple[bytearray | None, int, str]:
+    """Read and hash accepted-size bodies; stop at the first chunk that crosses the cap.
+
+    Oversized requests return no digest and are not signature-validated. `body_bytes`
+    includes the crossing chunk already yielded by ASGI, but no later chunks are read.
+    """
+    body = bytearray()
+    body_bytes = 0
+    digest = hmac.new(secret.encode(), digestmod=hashlib.sha256)
+    async for chunk in request.stream():
+        remaining = max_bytes - len(body)
+        if len(chunk) > remaining:
+            # ASGI has already yielded this chunk. Do not hash it or ask for another.
+            return None, body_bytes + len(chunk), ""
+        digest.update(chunk)
+        body.extend(chunk)
+        body_bytes += len(chunk)
+    return body, body_bytes, digest.hexdigest()
+
+
+def _signature_digest_ok(digest: str, header: str | None) -> bool:
+    if not header or not header.startswith("sha256="):
+        return False
+    return hmac.compare_digest("sha256=" + digest, header.strip().lower())
+
+
 FORWARDER = '''"""Forwards each request's diagnostics events to TRACE. Off unless both variables are set; never raises into the request path."""
 import asyncio
 import hashlib
@@ -114,7 +140,7 @@ async def _new_secret(conn: AsyncConnection, c: Container, row: dict) -> str:
 
 async def _view(conn: AsyncConnection, c: Container, project_id: UUID, row: dict | None, *, new_secret: str | None = None) -> dict:
     if row is None:
-        return {"configured": False, "forwarder_snippet": FORWARDER, "hook_snippet": HOOK, "accepted_fields": "event_id, event_time, message, level, request_id, run_id, component_id, operation, event_name, duration_ms, error_type, source_revision, deployment_id"}
+        return {"configured": False, "forwarder_snippet": FORWARDER, "hook_snippet": HOOK, "accepted_fields": "event_id (or id), event_time (or time/timestamp), message, level, request_id, related_request_id (browser client claim), run_id, component_id (or service), operation, event_name, duration_ms, error_type, source_revision (or revision), deployment_id, environment, status_code, source (app or browser)"}
     has = await (await conn.execute("SELECT 1 FROM connection_secrets WHERE connection_id=%s AND kind=%s", (row["id"], KIND))).fetchone()
     last = await (await conn.execute(
         "SELECT b.id, b.created_at, b.received, b.accepted, b.duplicates, b.rejected, b.reason, b.truncated, b.unmapped,"
@@ -126,7 +152,7 @@ async def _view(conn: AsyncConnection, c: Container, project_id: UUID, row: dict
             "last_batch_at": last["created_at"] if last else None, "last_batch": dict(last) if last else None, "stored_events": n,
             "graph": {"configured": c.extras.get("neo4j") is not None, **await graph_state(conn, project_id, row["id"])},
             "forwarder_snippet": FORWARDER, "hook_snippet": HOOK,
-            "accepted_fields": "event_id, event_time, message, level, request_id, run_id, component_id, operation, event_name, duration_ms, error_type, source_revision, deployment_id"}
+            "accepted_fields": "event_id (or id), event_time (or time/timestamp), message, level, request_id, related_request_id (browser client claim), run_id, component_id (or service), operation, event_name, duration_ms, error_type, source_revision (or revision), deployment_id, environment, status_code, source (app or browser)"}
 
 
 @router.get("/projects/{project_id}/log-source")
@@ -159,19 +185,20 @@ async def create_source(body: SourceIn, request: Request, ctx: ProjectContext = 
 @router.post("/ingest/events/{connection_id}")
 async def ingest_events(connection_id: UUID, request: Request, conn: AsyncConnection = Depends(get_conn), c: Container = Depends(get_container)):
     """Public on purpose: the application posts here. The HMAC-SHA256 signature is the authentication; the answer acknowledges durable receipt."""
-    raw = await request.body()
     row = await (await conn.execute("SELECT * FROM connections WHERE id=%s AND provider='generic' AND kind='telemetry'", (connection_id,))).fetchone()
     secret = await _secret(conn, c, connection_id) if row else None
     if row is None or secret is None:
         raise NotFound("Unknown source")
-    if not signature_ok(secret, raw, request.headers.get(SIG_HEADER)):
+    raw, body_bytes, digest = await _read_signed_body(request, c.settings.ingest_max_body_bytes, secret)
+    # Oversize is rejected before authentication; reading the remainder to validate its
+    # signature would let a public sender force unbounded stream consumption.
+    if raw is None:
+        raise PayloadTooLarge("Batch is too large")
+    if not _signature_digest_ok(digest, request.headers.get(SIG_HEADER)):
         raise Unauthenticated("Invalid signature", code="invalid_signature")
     if row["status"] != "connected" or row["project_id"] is None:
         raise Conflict("This source is not active", code="source_not_active")
     # From here the sender is authenticated: whatever is refused or damaged is accounted for (and becomes a coverage gap in the graph).
-    if len(raw) > c.settings.ingest_max_body_bytes:
-        await finish(conn, c, row, via="app_push", received=0, reason="oversize_body", body_bytes=len(raw))
-        raise PayloadTooLarge("Batch is too large")
     try:
         items = parse_body(raw)
         if len(items) == 1 and isinstance(items[0], dict) and isinstance(items[0].get("events"), list):

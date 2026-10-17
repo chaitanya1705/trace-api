@@ -20,6 +20,7 @@ from app.graph.archive import ArchiveError, extract_tarball
 from app.graph.indexer import index_repository
 from app.graph.repository import GraphRepository
 from app.jobs.queue import PermanentJobError, TransientJobError
+from app.jobs.triggers import request_graph_sync
 from app.jobs.worker import JobContext, handler
 
 NOW = object()  # sentinel: write the database clock, not a Python timestamp
@@ -124,6 +125,7 @@ async def graph_index(ctx: JobContext) -> dict:
             await audit(conn, organization_id=run["organization_id"], project_id=run["project_id"], actor=ctx.job["requested_by"],
                         action="graph.index", result="success", target_type="repository_binding", target_id=run["repository_binding_id"],
                         details={"commit": sha[:12], "symbols": report.symbols})
+            await request_graph_sync(conn, organization_id=run["organization_id"], project_id=run["project_id"])
             await conn.commit()
         return {"build_id": report.build_id, "commit_sha": sha}
     finally:

@@ -118,19 +118,20 @@ async def test_malformed_payload_is_refused_after_auth_and_recorded_as_a_gap(cli
     assert [g[0] for g in gap_specs({**b, "id": "b", "received": 0, "rejected": 0, "out_of_scope": 0, "truncated": 0, "unmapped": 0, "connection_id": cid, "via": "app_push"})] == ["rejected_input"]
 
 
-async def test_oversize_body_is_refused_only_for_an_authenticated_sender(client, container, org):
+async def test_oversize_body_is_refused_before_authentication(client, container, org):
     pid, cid, secret, h = await make_source(client, org)
     container.settings.ingest_max_body_bytes = 400
     big = [ev(i, message="x" * 50) for i in range(20)]
     body = json.dumps({"events": big}).encode()
-    assert (await client.post(f"{API}/ingest/events/{cid}", content=body, headers={"x-trace-signature": "sha256=00"})).status_code == 401
+    assert (await client.post(f"{API}/ingest/events/{cid}", content=body)).status_code == 413
+    assert await rows(container, "SELECT 1 FROM ingestion_batches WHERE project_id=%s", UUID(pid)) == []
+    small_body = json.dumps({"events": [ev(0)]}).encode()
+    assert (await client.post(f"{API}/ingest/events/{cid}", content=small_body, headers={"x-trace-signature": "sha256=00"})).status_code == 401
     assert await rows(container, "SELECT 1 FROM ingestion_batches WHERE project_id=%s", UUID(pid)) == []
     r = await push(client, cid, secret, big)
     assert r.status_code == 413 and r.json()["error"]["code"] == "payload_too_large"
-    b = (await rows(container, "SELECT reason, body_bytes, received FROM ingestion_batches WHERE project_id=%s", UUID(pid)))[0]
-    assert b["reason"] == "oversize_body" and b["body_bytes"] == len(body)
-    assert await rows(container, "SELECT 1 FROM evidence_inbox WHERE project_id=%s", UUID(pid)) == []                              # nothing partially stored
-    assert [g[0] for g in gap_specs({**b, "id": "b", "rejected": 0, "out_of_scope": 0, "truncated": 0, "unmapped": 0, "connection_id": cid, "via": "app_push"})] == ["oversize_input"]
+    assert await rows(container, "SELECT 1 FROM ingestion_batches WHERE project_id=%s", UUID(pid)) == []
+    assert await rows(container, "SELECT 1 FROM evidence_inbox WHERE project_id=%s", UUID(pid)) == []                              # no unauthenticated or partial evidence is recorded
     container.settings.ingest_max_body_bytes = 1024 * 1024
     assert (await push(client, cid, secret, [ev(1)])).json()["accepted"] == 1                                                         # the limit is the only thing that changed
 

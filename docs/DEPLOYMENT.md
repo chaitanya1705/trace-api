@@ -1,9 +1,13 @@
 # Deploying TRACE
 
-Topology (decided with the owner): **web on Vercel**, **API + worker together in one container on an always-on host** (Railway, Render or Fly), **Postgres on Supabase**, **graph on Neo4j Aura**.
+Topology (decided with the owner): **web on Vercel**, **API + worker together in one container on an always-on host** (**Railway**, chosen by the owner; Render and Fly also work), **Postgres on Supabase**, **graph on Neo4j Aura**.
 The API and the worker share one image and are supervised by `python -m app.run_all`. The worker must stay running (it polls the job queue every second), which is why it cannot live on Vercel Hobby (functions are request-bound; cron is once a day).
 
 > **Open access.** TRACE currently has no login. A hosted instance lets *anyone who can reach the URL* use it, including creating projects, importing tickets, reading logs and running investigations that spend your OpenAI quota. Do not publish the URLs. Turning on real login is a separate piece of work (see "Authentication" below).
+
+**Decisions (2026-10-17):** Railway hosts the API + worker (no sleeping; Render's free tier sleeps after 15 minutes). Supabase starts **empty**: migrations create the schema on first boot, and projects, connections and tickets are recreated through the UI. Both repos deploy from `main`, so merge the two `feature/trace-implementation` PRs first.
+
+> **Shared Neo4j.** If the deployed API uses the same Aura instance as local development, the old graph nodes stay in it but belong to the old local project ids. Every query is project-scoped, so they are invisible to the new projects; they only use space. Re-index the new projects' code from the UI. To clean up, delete nodes whose `project_id` is not in the new database, or use a separate Aura instance for the deployment.
 
 ## 0. Order of work
 
@@ -61,7 +65,7 @@ Helpers (run locally, they print the exact value to paste):
 Optional tuning variables exist (job leases, graph limits, run budgets); defaults are fine.
 
 Host notes:
-- **Railway**: New project > Deploy from GitHub repo (`trace-api`) > it detects the Dockerfile > add the variables > Settings > Networking > Generate domain. Health check path `/health/live`.
+- **Railway** (`railway.json` in the repo sets the Dockerfile build, the `/health/live` check and restart-on-failure): New project > Deploy from GitHub repo (`trace-api`, branch `main`) > paste the variables from `deploy.env.example` (Raw Editor) > Settings > Networking > Generate domain (then set `TRACE_PUBLIC_ORIGIN` to it). Keep **1 replica**: the one-active-investigation-per-ticket guard is in process memory. Do not enable serverless/app sleeping.
 - **Render**: New Web Service > Docker > an always-on (paid) instance type > add the variables. Free instances sleep and will stop the worker.
 - **Fly**: `fly launch` with the Dockerfile, set `auto_stop_machines = false` and `min_machines_running = 1`, then `fly secrets set ...`.
 
@@ -86,7 +90,7 @@ The web app needs no other variable and holds no secrets. `trace-web` builds wit
 4. **GitHub connection**: Connectors > Connect GitHub (or "Use this" for the existing installation).
 5. Stop ngrok; it is no longer in the path.
 
-A fresh database starts empty. Projects, connections, tickets and stored logs from the local database are **not** carried over; recreate the project through the setup page (about two minutes) and re-import tickets. Copying the local data is possible with `pg_dump` plus the same `TRACE_SECRET_KEY`, but is rarely worth it for a POC.
+The deployed database starts empty (chosen). Recreate the project through the setup page (about two minutes), reconnect GitHub and Vercel, re-import tickets, and index the code. A fresh `TRACE_SECRET_KEY` is fine because nothing encrypted is carried over. (Restoring the local database with `pg_dump` plus the same key would keep ids aligned with an existing graph, but was not chosen.)
 
 ## 5. Verify
 
@@ -107,4 +111,5 @@ Supabase JWT verification exists in the API (`AUTH_MODE=supabase`, with `SUPABAS
 - The supervisor restarts a crashed child and stops cleanly (`tests/test_run_all.py`); the API started and answered health checks under it on this machine.
 - The one-line `GITHUB_APP_PRIVATE_KEY` form is accepted by GitHub (real call).
 - Production-mode configuration rules (open-access opt-in, Supabase settings only when real auth is used) are covered by `tests/test_auth_off.py`.
+- Fresh start: the API booted against an empty database, applied all 9 migrations (28 tables), reported `ready` and created a project (local run, throwaway database).
 - **Not verified**: building the Docker image (Docker is not running on the development machine) and an actual deployment to a host, Supabase or Aura.

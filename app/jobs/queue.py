@@ -133,7 +133,7 @@ async def complete(conn: AsyncConnection, job_id: UUID, owner: str, result_ref: 
 
 async def fail(
     conn: AsyncConnection, job_id: UUID, owner: str, *, code: str, message: str,
-    retryable: bool, retry_after: float | None = None,
+    retryable: bool, retry_after: float | None = None, result_ref: dict | None = None,
 ) -> str:
     """Returns the new status: queued (will retry), failed (permanent) or dead (attempts exhausted)."""
     job = await (await conn.execute("SELECT attempt, max_attempts FROM jobs WHERE id=%s AND lease_owner=%s FOR UPDATE",
@@ -142,25 +142,29 @@ async def fail(
         await conn.rollback()
         return "lost"
     err = json.dumps({"code": code, "message": message[:500], "retryable": retryable})
+    result = json.dumps(result_ref) if result_ref is not None else None
     if retryable and job["attempt"] < job["max_attempts"]:
         status = "queued"
         await conn.execute(
             "UPDATE jobs SET status='queued', lease_owner=NULL, lease_expires_at=NULL, error=%s::jsonb,"
+            " result_ref=COALESCE(%s::jsonb, result_ref),"
             " next_attempt_at = now() + make_interval(secs => %s) WHERE id=%s",
-            (err, backoff_seconds(job["attempt"], retry_after), job_id))
+            (err, result, backoff_seconds(job["attempt"], retry_after), job_id))
     else:
         status = "dead" if retryable else "failed"
         await conn.execute(
-            "UPDATE jobs SET status=%s, finished_at=now(), lease_owner=NULL, lease_expires_at=NULL, error=%s::jsonb WHERE id=%s",
-            (status, err, job_id))
+            "UPDATE jobs SET status=%s, finished_at=now(), lease_owner=NULL, lease_expires_at=NULL, error=%s::jsonb,"
+            " result_ref=COALESCE(%s::jsonb, result_ref) WHERE id=%s",
+            (status, err, result, job_id))
     await conn.commit()
     return status
 
 
-async def mark_cancelled(conn: AsyncConnection, job_id: UUID, owner: str) -> None:
+async def mark_cancelled(conn: AsyncConnection, job_id: UUID, owner: str, *, result_ref: dict | None = None) -> None:
+    result = json.dumps(result_ref) if result_ref is not None else None
     await conn.execute(
-        "UPDATE jobs SET status='cancelled', finished_at=now(), lease_owner=NULL, lease_expires_at=NULL"
-        " WHERE id=%s AND lease_owner=%s", (job_id, owner))
+        "UPDATE jobs SET status='cancelled', finished_at=now(), lease_owner=NULL, lease_expires_at=NULL,"
+        " result_ref=COALESCE(%s::jsonb, result_ref) WHERE id=%s AND lease_owner=%s", (result, job_id, owner))
     await conn.commit()
 
 

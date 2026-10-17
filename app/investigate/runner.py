@@ -163,6 +163,7 @@ def _run(r: Run, t: TicketIn, actor_id: str, api_key: str | None, model: str) ->
     # Where was evidence actually recorded in the ticket's window? The environment label on a ticket is a report, evidence is the record.
     seen = r.cypher(
         "MATCH (e:Entity:EvidenceRecord {project_id: $p})-[:OBSERVED_ON]->(s:Entity:Service) WHERE e.event_time >= datetime($ws) AND e.event_time < datetime($we) AND e.ingested_at <= datetime($cut) "
+        "AND NOT (coalesce(e.origin_detail, '') CONTAINS '(untrusted browser observation)') "
         "RETURN s.id AS service_id, e.environment_id AS environment_id, count(*) AS n ORDER BY n DESC", ws=(ws - timedelta(minutes=5)).isoformat(), we=(we + timedelta(minutes=5)).isoformat(), cut=now.isoformat())
     hint = (t.service_hint or "").lower()
     by_id = {x["id"]: x for x in services}

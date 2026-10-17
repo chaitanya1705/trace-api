@@ -33,6 +33,7 @@ from app.domain.projects.schemas import (
 )
 from app.envelope import Envelope, wrap
 from app.errors import Conflict, Forbidden, Unprocessable
+from app.jobs.triggers import request_graph_sync
 from app.pagination import clamp_limit, decode_cursor, encode_cursor
 
 router = APIRouter(tags=["projects"])
@@ -152,6 +153,41 @@ async def patch_project(
     return wrap(request, (await svc.project_summaries(conn, [row]))[0])
 
 
+@router.delete("/projects/{project_id}")
+async def delete_project(
+    request: Request,
+    confirm: str = Query(..., max_length=200, description="The project's exact name, typed by the person deleting it"),
+    delete_tickets: bool = Query(False, description="Also delete tickets assigned to this project; otherwise they return to 'Need a project'"),
+    ctx: ProjectContext = Depends(project_access(Cap.MANAGE_PROJECT)),
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Permanently delete a project and everything TRACE holds for it: its evidence graph, stored logs and deployments,
+    connections and their sealed credentials, repository bindings, jobs and members. The audit trail is kept.
+    The graph is cleared first, so a graph failure leaves the project intact instead of leaving orphaned evidence."""
+    import asyncio
+
+    from app.graph.repository import GraphRepository
+
+    p = await svc.get_project_row(conn, ctx.org.organization_id, ctx.project_id)
+    if confirm.strip() != p["name"]:
+        raise Unprocessable("Type the project's exact name to confirm deletion", code="confirmation_mismatch")
+    graph_nodes = 0
+    driver = request.app.state.container.extras.get("neo4j")
+    if driver is not None:
+        db = request.app.state.container.settings.neo4j_database
+        graph_nodes = await asyncio.to_thread(GraphRepository(driver, db).delete_project, str(ctx.project_id))
+    tickets = 0
+    if delete_tickets:
+        tickets = (await conn.execute("DELETE FROM tickets WHERE project_id=%s", (ctx.project_id,))).rowcount
+    # every project-scoped table references projects with ON DELETE CASCADE (tickets: SET NULL), so one delete removes the rest
+    await conn.execute("DELETE FROM projects WHERE id=%s", (ctx.project_id,))
+    await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id, action="project.delete",
+                target_type="project", target_id=ctx.project_id, request=request,
+                details={"name": p["name"], "graph_nodes_deleted": graph_nodes, "tickets_deleted": tickets if delete_tickets else 0, "tickets_unassigned": not delete_tickets})
+    await conn.commit()
+    return wrap(request, {"deleted": True, "graph_nodes_deleted": graph_nodes, "tickets_deleted": tickets, "neo4j_configured": driver is not None})
+
+
 # --- environments / services: versioned arrays of stable IDs (A5) -------------------------------------------------
 
 @router.put("/projects/{project_id}/environments", response_model=Envelope[list[EnvironmentOut]])
@@ -184,6 +220,7 @@ async def put_environments(
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.environments.put", target_type="project", target_id=ctx.project_id, request=request,
                 details={"keys": keys})
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     out = await (await conn.execute(
         "SELECT id, name, environment_key AS key FROM environments WHERE project_id=%s ORDER BY created_at, name",
@@ -219,6 +256,7 @@ async def put_services(
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.services.put", target_type="project", target_id=ctx.project_id, request=request,
                 details={"keys": keys})
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     out = await (await conn.execute(
         "SELECT id, name, service_key AS key FROM services WHERE project_id=%s ORDER BY name", (ctx.project_id,))).fetchall()

@@ -63,6 +63,8 @@ def source_connection(row: dict) -> str:
 
 def _origin_detail(row: dict) -> str:
     base = row["provider"] + (f"/{row['source']}" if row.get("source") else "")
+    if row.get("source") == "browser":
+        base += " (untrusted browser observation)"
     return base + (f" deployment={row['deployment_id']}" if row.get("deployment_id") else "")
 
 
@@ -152,8 +154,11 @@ def _project_rows(repo: GraphRepository, b: EvidenceBundle, rep: ApplyReport) ->
     manifest_cache: dict[str, str | None] = {}
     for r in b.rows:
         sc = r["graph_scope"] or {}
-        env_id = env_node(r["environment_id"])
-        svc_id = service_node(sc["service_key"], sc.get("service_name")) if sc.get("service_key") else None
+        browser_observation = r.get("source") == "browser"
+        # Browser supplied observations are retained in the graph with provenance, but are not attached
+        # to backend service, environment, deployment, or source-code evidence relationships.
+        env_id = None if browser_observation else env_node(r["environment_id"])
+        svc_id = None if browser_observation else service_node(sc["service_key"], sc.get("service_name")) if sc.get("service_key") else None
         eid = I.evidence_id(pid, source_connection(r), r["source_record_key"])
         nodes.append(prepare_node("LogEvent", eid, pid, {
             "source_connection_id": source_connection(r), "source_record_key": r["source_record_key"], "ingested_at": r["ingested_at"], "origin": "telemetry",
@@ -172,7 +177,7 @@ def _project_rows(repo: GraphRepository, b: EvidenceBundle, rep: ApplyReport) ->
             rep.observed_on_service += 1
         else:
             rep.unknown_service += 1
-        dep = dep_info.get(sc.get("deployment") or "")
+        dep = None if browser_observation else dep_info.get(sc.get("deployment") or "")
         if dep and dep.get("id"):
             rel("ASSOCIATED_WITH", "LogEvent", eid, "Deployment", dep["id"], mapping_method="event_deployment_id")
             rep.associated_with_deployment += 1

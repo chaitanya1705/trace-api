@@ -165,7 +165,8 @@ def _dt(v: str | None, name: str) -> datetime | None:
 async def search_logs(
     request: Request, environment: str | None = Query(None, max_length=40), level: str | None = Query(None, pattern="^(info|warning|error|fatal)$"),
     q: str | None = Query(None, max_length=200), request_id: str | None = Query(None, max_length=100), deployment_id: str | None = Query(None, max_length=100),
-    since: str | None = None, until: str | None = None, limit: int | None = Query(None, ge=1, le=100), cursor: str | None = None,
+    service_hint: str | None = Query(None, max_length=200), since: str | None = None, until: str | None = None,
+    limit: int | None = Query(None, ge=1, le=100), cursor: str | None = None,
     ctx: ProjectContext = Depends(project_access(Cap.READ)), conn: AsyncConnection = Depends(get_conn), c: Container = Depends(get_container),
 ):
     """Stored logs only (filters are TRACE filters, not provider query syntax). 'Nothing stored' and 'nothing matched' are told apart."""
@@ -184,6 +185,15 @@ async def search_logs(
     if deployment_id:
         where.append("i.deployment_id = %s")
         params.append(deployment_id)
+    if service_hint:
+        # Ticket hints commonly include the HTTP method while ShopFlow log rows store the path only.
+        parts = service_hint.split(" ", 1)
+        if len(parts) == 2 and parts[0] in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"} and parts[1].startswith("/"):
+            where.append("i.service_hint IN (%s, %s)")
+            params.extend((service_hint, parts[1]))
+        else:
+            where.append("i.service_hint = %s")
+            params.append(service_hint)
     if q:
         like = "%" + q.strip().lower().replace("%", r"\%").replace("_", r"\_") + "%"
         where.append("(lower(i.message) LIKE %s OR lower(coalesce(i.service_hint,'')) LIKE %s OR lower(coalesce(i.request_id,'')) LIKE %s)")
@@ -212,6 +222,7 @@ async def search_logs(
         "SELECT (SELECT count(*) FROM connections WHERE project_id=%s AND provider='generic' AND kind='telemetry' AND status='connected') AS app_sources,"
         " (SELECT count(*) FROM log_scope_entries WHERE project_id=%s) AS hosting_resources", (ctx.project_id, ctx.project_id))).fetchone()
     out = [{**{k: r[k] for k in ("id", "event_time", "ingested_at", "level", "source", "service_hint", "request_id", "status_code", "deployment_id", "environment_key", "extra", "graph_status", "provider")},
+            "trust_class": "untrusted_browser" if r["source"] == "browser" else "app_reported" if r["provider"] == "app_push" else "provider_reported",
             "message": (r["message"] or "")[:2000]} for r in rows]
     nxt = encode_cursor({"t": rows[-1]["sort_t"].isoformat(), "id": str(rows[-1]["id"])}) if more else None
     return wrap(request, out, next_cursor=nxt,
