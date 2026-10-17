@@ -35,6 +35,39 @@
         "title": "AcceptedOut",
         "type": "object"
       },
+      "ApprovalIn": {
+        "properties": {
+          "decision": {
+            "pattern": "^(approve|reject)$",
+            "title": "Decision",
+            "type": "string"
+          },
+          "patch_hash": {
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Patch Hash",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "decision",
+          "patch_hash"
+        ],
+        "title": "ApprovalIn",
+        "type": "object"
+      },
       "AskIn": {
         "properties": {
           "question": {
@@ -996,6 +1029,24 @@
         "title": "PathMap",
         "type": "object"
       },
+      "PolicyIn": {
+        "properties": {
+          "author_can_approve": {
+            "default": false,
+            "title": "Author Can Approve",
+            "type": "boolean"
+          },
+          "required_approvals": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Required Approvals",
+            "type": "integer"
+          }
+        },
+        "title": "PolicyIn",
+        "type": "object"
+      },
       "ProjectCreate": {
         "properties": {
           "description": {
@@ -1358,6 +1409,21 @@
           "repositories"
         ],
         "title": "ReposPut",
+        "type": "object"
+      },
+      "ReviseIn": {
+        "properties": {
+          "instruction": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Instruction",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instruction"
+        ],
+        "title": "ReviseIn",
         "type": "object"
       },
       "RotateIn": {
@@ -1953,6 +2019,364 @@
         "summary": "Bot Chat",
         "tags": [
           "bot"
+        ]
+      }
+    },
+    "/api/v1/changes": {
+      "get": {
+        "operationId": "list_changes_api_v1_changes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Changes",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}": {
+      "get": {
+        "operationId": "get_change_api_v1_changes__change_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Change",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/approvals": {
+      "post": {
+        "operationId": "decide_api_v1_changes__change_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/approvals/revoke": {
+      "post": {
+        "description": "Withdraw your own decision on the current version; an approved change goes back to waiting.",
+        "operationId": "revoke_api_v1_changes__change_id__approvals_revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/draft-pr": {
+      "post": {
+        "operationId": "draft_pr_api_v1_changes__change_id__draft_pr_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft Pr",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/patch": {
+      "get": {
+        "description": "The exact diff as a patch file. Nothing is applied by TRACE; `git apply` it at the base commit named in the header.",
+        "operationId": "download_patch_api_v1_changes__change_id__patch_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Patch",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/versions": {
+      "post": {
+        "description": "An edit is a new immutable version: the reviewer's instruction goes back to the model with the current diff. Earlier approvals do not carry over.",
+        "operationId": "revise_change_api_v1_changes__change_id__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revise Change",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
+    "/api/v1/changes/{change_id}/withdraw": {
+      "post": {
+        "operationId": "withdraw_api_v1_changes__change_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw",
+        "tags": [
+          "changes"
         ]
       }
     },
@@ -3586,6 +4010,96 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/change-policy": {
+      "get": {
+        "operationId": "get_policy_api_v1_projects__project_id__change_policy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Policy",
+        "tags": [
+          "changes"
+        ]
+      },
+      "put": {
+        "operationId": "put_policy_api_v1_projects__project_id__change_policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Policy",
+        "tags": [
+          "changes"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/connections": {
       "get": {
         "operationId": "list_connections_api_v1_projects__project_id__connections_get",
@@ -4739,6 +5253,58 @@
         "summary": "Ask Investigation",
         "tags": [
           "investigations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/investigations/{run_id}/changes": {
+      "post": {
+        "description": "Explicit action on a finished investigation. Needs an identified root cause and the indexed source of the files it points at.",
+        "operationId": "propose_change_api_v1_projects__project_id__investigations__run_id__changes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Propose Change",
+        "tags": [
+          "changes"
         ]
       }
     },
@@ -6009,6 +6575,46 @@
           }
         },
         "summary": "Import Pulselab",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
+    "/api/v1/tickets/import/pulselab/confirm": {
+      "post": {
+        "description": "Store an incident export only after the caller submits the fields reviewed in New Ticket.",
+        "operationId": "confirm_pulselab_api_v1_tickets_import_pulselab_confirm_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Confirm Pulselab",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
+    "/api/v1/tickets/import/pulselab/preview": {
+      "post": {
+        "description": "Parse a reporter-supplied incident export for review without writing a ticket or graph job.",
+        "operationId": "preview_pulselab_api_v1_tickets_import_pulselab_preview_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Preview Pulselab",
         "tags": [
           "tickets"
         ]

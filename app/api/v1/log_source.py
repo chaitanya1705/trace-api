@@ -22,6 +22,7 @@ from app.domain.ingest.graph_apply import graph_state
 from app.domain.ingest.intake import finish
 from app.domain.ingest.store import env_lookup, store_rows
 from app.domain.ingest.vercel_logs import MAX_EVENTS_PER_BATCH, parse_body
+from app.domain.tickets.auto import open_error_tickets
 from app.envelope import wrap
 from app.errors import Conflict, DependencyUnavailable, NotFound, TraceError, Unauthenticated, Unprocessable
 from app.storage.secrets import Sealed
@@ -219,5 +220,7 @@ async def ingest_events(connection_id: UUID, request: Request, conn: AsyncConnec
         rows.append((r, envs.get(r.env_key) if r.env_key else None))
     batch_id = uuid4()
     res = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=connection_id, provider="app_push", rows=rows, batch_id=batch_id)
+    # Failing requests the application reports open (or add to) a ticket in the same transaction; never an investigation.
+    await open_error_tickets(conn, organization_id=row["organization_id"], project_id=row["project_id"], rows=res.rows)
     await finish(conn, c, row, via="app_push", received=len(items), res=res, rejected=rejected, body_bytes=len(raw), batch_id=batch_id)
     return JSONResponse({"received": len(items), "accepted": res.accepted, "duplicates": res.duplicates, "rejected": rejected})

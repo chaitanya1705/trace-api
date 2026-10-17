@@ -3,6 +3,8 @@ import uuid
 
 import pytest
 
+from app.domain.tickets.pulselab import parse_export
+from app.errors import Unprocessable
 from app.redact import redact_json, redact_text
 from tests.conftest import add_member, token_for
 
@@ -131,6 +133,232 @@ async def test_pulselab_import_maps_redacts_dedupes_and_revises(client, org):
     assert [r["revision_number"] for r in d["revisions"]] == [2, 1]
     allt = (await client.get(f"{API}/tickets?view=all", headers=h)).json()["data"]
     assert len(allt) == 1                                            # deduped on (source, ticket_id)
+
+
+async def test_pulselab_direct_import_keeps_legacy_null_preservation(client, org):
+    _, h = await _setup(client, org)
+    created = await client.post(f"{API}/tickets/import/pulselab", headers=h, content=json.dumps(EXPORT))
+    assert created.status_code == 201
+    changed = json.loads(json.dumps(EXPORT))
+    changed["ticket"].pop("environment_label")
+    changed["ticket"].pop("affected_operation")
+    updated = await client.post(f"{API}/tickets/import/pulselab", headers=h, content=json.dumps(changed))
+    ticket = updated.json()["data"]["ticket"]
+    assert ticket["environment_key"] == "production"
+    assert ticket["service_hint"] == "POST /api/orders"
+
+
+async def test_pulselab_direct_import_requires_edit_rights_on_existing_project(client, org, container):
+    existing_project_id, owner_headers = await _setup(client, org)
+    target_project_id, _ = await _setup(client, org, name="Target")
+    created = await client.post(
+        f"{API}/tickets/import/pulselab?project_id={existing_project_id}",
+        headers=owner_headers,
+        content=json.dumps(EXPORT),
+    )
+    assert created.status_code == 201
+    original = created.json()["data"]["ticket"]
+
+    read_only_id, read_only_email = await add_member(container, org["id"], "viewer")
+    user_headers = token_for(read_only_id, read_only_email)
+    await client.put(f"{API}/projects/{existing_project_id}/members", headers=owner_headers, json={"members": [
+        {"user_id": str(org["owner_id"]), "role": "admin"},
+        {"user_id": str(read_only_id), "role": "viewer"},
+    ]})
+    await client.put(f"{API}/projects/{target_project_id}/members", headers=owner_headers, json={"members": [
+        {"user_id": str(org["owner_id"]), "role": "admin"},
+        {"user_id": str(read_only_id), "role": "investigator"},
+    ]})
+
+    changed = json.loads(json.dumps(EXPORT))
+    changed["ticket"]["title"] = "Unauthorized rewrite"
+    denied = await client.post(
+        f"{API}/tickets/import/pulselab?project_id={target_project_id}",
+        headers=user_headers,
+        content=json.dumps(changed),
+    )
+    assert denied.status_code == 403
+
+    unchanged = (await client.get(f"{API}/tickets/{original['id']}", headers=owner_headers)).json()["data"]
+    assert unchanged["title"] == original["title"]
+    assert unchanged["project_id"] == existing_project_id
+    assert unchanged["version"] == original["version"]
+    assert [revision["revision_number"] for revision in unchanged["revisions"]] == [1]
+
+
+async def test_pulselab_preview_maps_only_supplied_fields_without_creating_ticket(client, org):
+    _, h = await _setup(client, org)
+    preview = await client.post(f"{API}/tickets/import/pulselab/preview", headers=h, content=json.dumps(EXPORT))
+    assert preview.status_code == 200
+    result = preview.json()["data"]
+    assert result["provenance"] == "Reporter-supplied PulseLab incident export"
+    assert result["fields"] == {
+        "title": "Mixed cart total is wrong",
+        "description": redact_text(EXPORT["ticket"]["description"]),
+        "severity": None,
+        "environment_key": "production",
+        "service_hint": "POST /api/orders",
+        "project_id": None,
+    }
+    assert (await client.get(f"{API}/tickets?view=all", headers=h)).json()["data"] == []
+
+
+def test_pulselab_malformed_reporter_severity_is_not_rated():
+    for severity in ([], {}, 1, True, "sev-1", "SEV-5"):
+        export = json.loads(json.dumps(EXPORT))
+        export["ticket"]["severity"] = severity
+        assert parse_export(export).severity is None
+
+
+async def test_pulselab_preview_rejects_evaluator_export_without_ticket(client, org):
+    _, h = await _setup(client, org)
+    evaluator_export = {
+        "schema_version": "1.0",
+        "run_id": "run-77",
+        "observations": [{"scenario_id": "PL-04", "scenario_label": "Mixed cart", "passed": False}],
+        "request_results": [{"request_id": "r1", "checks": [{"name": "total", "passed": False}]}],
+    }
+    response = await client.post(
+        f"{API}/tickets/import/pulselab/preview", headers=h, json=evaluator_export,
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_export"
+    with pytest.raises(Unprocessable) as exc:
+        parse_export(evaluator_export)
+    assert exc.value.code == "invalid_export"
+
+
+async def test_pulselab_confirmation_stores_reviewed_fields_and_original_payload(client, org):
+    project_id, h = await _setup(client, org)
+    second_project_id, _ = await _setup(client, org, name="Other")
+    reviewed = {
+        "title": "Edited symptom title",
+        "description": "Reporter observed failed checkout requests.",
+        "severity": "SEV-2",
+        "environment_key": "staging",
+        "service_hint": "POST /api/checkout",
+        "project_id": project_id,
+    }
+    response = await client.post(
+        f"{API}/tickets/import/pulselab/confirm",
+        headers=h,
+        json={"export": EXPORT, "fields": reviewed},
+    )
+    assert response.status_code == 201
+    ticket = response.json()["data"]["ticket"]
+    assert {key: ticket[key] for key in reviewed} == reviewed
+    assert ticket["source"] == "pulselab"
+    payload = (await client.get(f"{API}/tickets/{ticket['id']}/payload", headers=h)).json()["data"]
+    assert payload["ticket"]["ticket_id"] == EXPORT["ticket"]["ticket_id"]
+    assert payload["backend_events"] == EXPORT["backend_events"]
+
+    reviewed["project_id"] = second_project_id
+    updated = await client.post(
+        f"{API}/tickets/import/pulselab/confirm",
+        headers=h,
+        json={"export": EXPORT, "fields": reviewed},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["data"]["ticket"]["project_id"] == second_project_id
+
+
+async def test_pulselab_confirmation_clears_reviewed_values_and_preserves_source_data(client, org):
+    project_id, h = await _setup(client, org)
+    reviewed = {
+        "title": "Reviewed title",
+        "description": "Reviewed description",
+        "severity": "SEV-2",
+        "environment_key": "production",
+        "service_hint": "POST /api/orders",
+        "project_id": project_id,
+    }
+    created = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=h,
+                                json={"export": EXPORT, "fields": reviewed})
+    assert created.status_code == 201, created.text
+    original = created.json()["data"]["ticket"]
+    payload_before = (await client.get(f"{API}/tickets/{original['id']}/payload", headers=h)).json()["data"]
+
+    changed_export = json.loads(json.dumps(EXPORT))
+    changed_export["ticket"]["started_at"] = "2026-10-17T10:00:00Z"
+    changed_export["backend_events"].append({"request_id": "unreviewed", "msg": "new source data"})
+    cleared = dict(reviewed, title="Cleared selections", severity=None, environment_key=None, service_hint=None, project_id=None)
+    updated = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=h,
+                                json={"export": changed_export, "fields": cleared})
+    assert updated.status_code == 200, updated.text
+    ticket = updated.json()["data"]["ticket"]
+    assert ticket["title"] == "Cleared selections"
+    assert ticket["severity"] is None
+    assert ticket["environment_key"] is None
+    assert ticket["service_hint"] is None
+    assert ticket["project_id"] is None
+    assert ticket["source_created_at"] == original["source_created_at"]
+    assert ticket["window_start"] == original["window_start"]
+    assert ticket["window_end"] == original["window_end"]
+    assert ticket["evidence_summary"] == original["evidence_summary"]
+    payload_after = (await client.get(f"{API}/tickets/{original['id']}/payload", headers=h)).json()["data"]
+    assert payload_after == payload_before
+
+
+async def test_pulselab_confirm_requires_access_to_existing_project_before_reassignment(client, org, container):
+    first_project_id, owner_headers = await _setup(client, org)
+    second_project_id, _ = await _setup(client, org, name="Other")
+    reviewed = {"title": "Original title", "description": "Original report", "severity": None,
+                "environment_key": None, "service_hint": None, "project_id": first_project_id}
+    created = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=owner_headers,
+                                json={"export": EXPORT, "fields": reviewed})
+    assert created.status_code == 201
+    original = created.json()["data"]["ticket"]
+
+    investigator_id, investigator_email = await add_member(container, org["id"], "investigator")
+    investigator_headers = token_for(investigator_id, investigator_email)
+    await client.put(f"{API}/projects/{second_project_id}/members", headers=owner_headers, json={"members": [
+        {"user_id": str(org["owner_id"]), "role": "admin"},
+        {"user_id": str(investigator_id), "role": "investigator"},
+    ]})
+
+    edited = dict(reviewed, title="Unauthorized rewrite", project_id=second_project_id)
+    denied = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=investigator_headers,
+                               json={"export": EXPORT, "fields": edited})
+    assert denied.status_code == 404
+
+    unchanged = (await client.get(f"{API}/tickets/{original['id']}", headers=owner_headers)).json()["data"]
+    assert unchanged["title"] == original["title"]
+    assert unchanged["project_id"] == first_project_id
+    assert unchanged["version"] == original["version"]
+    assert [revision["revision_number"] for revision in unchanged["revisions"]] == [1]
+
+
+async def test_pulselab_confirm_requires_edit_rights_on_existing_project(client, org, container):
+    existing_project_id, owner_headers = await _setup(client, org)
+    target_project_id, _ = await _setup(client, org, name="Target")
+    reviewed = {"title": "Original title", "description": "Original report", "severity": None,
+                "environment_key": None, "service_hint": None, "project_id": existing_project_id}
+    created = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=owner_headers,
+                                json={"export": EXPORT, "fields": reviewed})
+    assert created.status_code == 201
+    original = created.json()["data"]["ticket"]
+
+    read_only_id, read_only_email = await add_member(container, org["id"], "viewer")
+    user_headers = token_for(read_only_id, read_only_email)
+    await client.put(f"{API}/projects/{existing_project_id}/members", headers=owner_headers, json={"members": [
+        {"user_id": str(org["owner_id"]), "role": "admin"},
+        {"user_id": str(read_only_id), "role": "viewer"},
+    ]})
+    await client.put(f"{API}/projects/{target_project_id}/members", headers=owner_headers, json={"members": [
+        {"user_id": str(org["owner_id"]), "role": "admin"},
+        {"user_id": str(read_only_id), "role": "investigator"},
+    ]})
+
+    edited = dict(reviewed, title="Unauthorized rewrite", project_id=target_project_id)
+    denied = await client.post(f"{API}/tickets/import/pulselab/confirm", headers=user_headers,
+                               json={"export": EXPORT, "fields": edited})
+    assert denied.status_code == 403
+
+    unchanged = (await client.get(f"{API}/tickets/{original['id']}", headers=owner_headers)).json()["data"]
+    assert unchanged["title"] == original["title"]
+    assert unchanged["project_id"] == existing_project_id
+    assert unchanged["version"] == original["version"]
+    assert [revision["revision_number"] for revision in unchanged["revisions"]] == [1]
 
 
 async def test_import_rejects_garbage_and_oversize(client, org):

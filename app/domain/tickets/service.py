@@ -89,6 +89,8 @@ async def upsert_ticket(
         existing = await (await conn.execute(
             "SELECT * FROM tickets WHERE organization_id=%s AND source=%s AND external_id=%s FOR UPDATE",
             (org.organization_id, source, f.external_id))).fetchone()
+    if existing is not None:
+        await require_edit_rights(conn, org, existing)
     snapshot = {"title": f.title, "description": f.description, "severity": f.severity, "environment_key": f.environment_key,
                 "service_hint": f.service_hint, "window_start": f.window_start, "window_end": f.window_end}
     if existing is None:
@@ -121,6 +123,59 @@ async def upsert_ticket(
     await audit(conn, organization_id=org.organization_id, project_id=row["project_id"], actor=org.principal.user_id,
                 action=f"ticket.{outcome}", target_type="ticket", target_id=row["id"], request=request, details={"source": source})
     return row, outcome
+
+
+async def update_reviewed_ticket(
+    conn: AsyncConnection, org: OrgContext, existing: dict, *, title: str, description: str,
+    severity: str | None, environment_key: str | None, service_hint: str | None, project_id: UUID | None,
+    request=None,
+) -> tuple[dict, str]:
+    """Apply only values explicitly reviewed in the PulseLab confirmation form.
+
+    Source timestamps, evidence summary, and the original payload remain owned by the import.
+    """
+    await require_edit_rights(conn, org, existing)
+    await require_create_rights(conn, org, project_id)
+    desc = redact_text(description)
+    content_changed = any((
+        existing["title"] != title,
+        existing["description"] != desc,
+        existing["severity"] != severity,
+        existing["environment_key"] != environment_key,
+        existing["service_hint"] != service_hint,
+    ))
+    assignment_changed = existing["project_id"] != project_id
+    if not content_changed and not assignment_changed:
+        return existing, "unchanged"
+
+    next_revision = existing["revision_number"] + 1 if content_changed else existing["revision_number"]
+    next_hash = existing["content_hash"]
+    if content_changed:
+        reviewed = TicketFields(
+            external_id=existing["external_id"], title=title, description=desc, severity=severity,
+            environment_key=environment_key, service_hint=service_hint,
+            source_created_at=existing["source_created_at"], window_start=existing["window_start"],
+            window_end=existing["window_end"], evidence_summary=existing["evidence_summary"],
+        )
+        next_hash = content_hash(reviewed, existing["payload"])
+
+    row = await (await conn.execute(
+        "UPDATE tickets SET title=%s, description=%s, severity=%s, environment_key=%s, service_hint=%s,"
+        " project_id=%s, assignment_version=assignment_version+%s, content_hash=%s, revision_number=%s WHERE id=%s RETURNING *",
+        (title, desc, severity, environment_key, service_hint, project_id, int(assignment_changed), next_hash,
+         next_revision, existing["id"]),
+    )).fetchone()
+    if content_changed:
+        snapshot = {"title": title, "description": desc, "severity": severity, "environment_key": environment_key,
+                    "service_hint": service_hint, "window_start": existing["window_start"], "window_end": existing["window_end"]}
+        await conn.execute(
+            "INSERT INTO ticket_revisions(ticket_id,revision_number,content_hash,fields) VALUES (%s,%s,%s,%s::jsonb)",
+            (row["id"], next_revision, next_hash, json.dumps(snapshot, default=str)),
+        )
+    await audit(conn, organization_id=org.organization_id, project_id=project_id, actor=org.principal.user_id,
+                action="ticket.update" if content_changed else "ticket.assign", target_type="ticket", target_id=row["id"],
+                request=request, details={"source": "pulselab", "reviewed": True})
+    return row, "updated"
 
 
 async def get_visible(conn: AsyncConnection, org: OrgContext, ticket_id: UUID, *, lock: bool = False) -> dict:

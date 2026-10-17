@@ -4,7 +4,7 @@ Rows are stored with graph_status='pending'; only the graph applier (app/graph/a
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +19,7 @@ class StoreResult:
     duplicates: int = 0
     truncated: int = 0   # accepted rows whose message was cut at the cap
     unmapped: int = 0    # accepted rows whose environment could not be mapped (left unknown)
+    rows: list[LogRow] = field(default_factory=list)   # the rows newly stored by this call (duplicates excluded)
 
 
 async def env_lookup(conn: AsyncConnection, project_id: UUID) -> dict[str, UUID]:
@@ -39,6 +40,7 @@ async def store_rows(conn: AsyncConnection, *, organization_id: UUID, project_id
              row.deployment_id, row.request_id, row.status_code, row.service_hint, row.message, row.content_hash, json.dumps(row.extra, default=str), batch_id))).fetchone()
         if got:
             res.accepted += 1
+            res.rows.append(row)
             res.truncated += 1 if row.extra.get("message_truncated") else 0
             res.unmapped += 1 if env_id is None else 0
             if connection_id and row.event_time and (row.provider_project_id not in latest or row.event_time > latest[row.provider_project_id]):
