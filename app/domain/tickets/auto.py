@@ -17,6 +17,7 @@ from psycopg import AsyncConnection
 
 from app.audit import audit
 from app.domain.ingest.vercel_logs import LogRow
+from app.jobs.triggers import request_graph_sync
 
 SOURCE = "webhook"
 PREFIX = "app-errors:"
@@ -95,4 +96,6 @@ async def open_error_tickets(conn: AsyncConnection, *, organization_id: UUID, pr
         await audit(conn, organization_id=organization_id, project_id=project_id, actor=None, action="ticket.auto_opened",
                     target_type="ticket", target_id=row["id"], details={"operation": op, "error_type": etype, "occurrences": len(occ)})
         touched.append(row["id"])
+    if touched:
+        await request_graph_sync(conn, organization_id=organization_id, project_id=project_id)
     return touched
