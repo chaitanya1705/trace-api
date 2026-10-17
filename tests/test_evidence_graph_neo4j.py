@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 
 import app.jobs.handlers  # noqa: F401  (registers the appliers)
+from app.bot.tools import GraphTools
 from app.domain.ingest import graph_apply as ga
 from app.graph import identity as I
 from app.graph import outbox as ob
@@ -117,6 +118,31 @@ async def test_app_push_reaches_the_graph_with_unknowns_kept_and_replays_cleanly
     assert {r["graph_attempts"] for r in await rows(container, "SELECT graph_attempts FROM evidence_inbox WHERE project_id=%s", UUID(pid))} == {2}
 
 
+async def test_browser_observation_keeps_untrusted_provenance_without_backend_runtime_links(client, container, org, driver, neo):
+    pid, cid, secret, _ = await make_source(client, org, name="BrowserOnly", service_key="checkout", services=["checkout"])
+    neo.append(pid)
+    browser = {**ev(1, level="ERROR", deployment_id="dpl_fake", op="checkout"), "source": "browser", "trust_class": "trusted"}
+    backend = ev(2, level="ERROR", message="backend failure")
+    await push(client, cid, secret, [browser, backend])
+    out = await apply(container, org, pid)
+    assert out["applied"] == 2 and out["failed"] == 0
+
+    observation = node(driver, pid, "evt-1", cid)
+    assert observation["props"]["origin_detail"] == "app_push/browser (untrusted browser observation) deployment=dpl_fake"
+    assert observation["props"].get("environment_id") is None and observation["props"].get("service_id") is None
+    assert observation["props"]["request_id"] == "req-1"  # retained as sender-reported metadata
+    assert observation["edges"] == []
+
+    tools = GraphTools(driver, _creds()[3], [pid])
+    recent = tools.recent_events(severity="error")["events"]
+    assert [row["id"] for row in recent] == [I.evidence_id(pid, cid, "evt-2")]
+    summary = tools.error_summary()
+    assert summary["severity_totals"] == [{"severity": "error", "events": 1}]
+    assert sum(row["events"] for row in summary["groups"]) == 1
+    overview = tools.graph_overview()["log_events"]
+    assert overview["total"] == 1 and overview["errors"] == 1
+
+
 async def test_indexed_revision_links_the_deployment_and_an_unambiguous_operation_locates_code(client, container, org, driver, neo):
     pid, cid, secret, h = await make_source(client, org, name="NeoB")
     neo.append(pid)
@@ -151,7 +177,7 @@ async def test_late_event_is_added_without_rewriting_what_an_earlier_run_saw(cli
     args = dict(project_id=pid, service_id=svc, environment_id=env, window_start=T0.isoformat(), window_end=(T0 + timedelta(hours=1)).isoformat(), include_info=True, limit=50)
     seen = [r["id"] for r in run_template(driver, db, "log_events_in_window", cutoff=cutoff.isoformat(), **args)]
     assert len(seen) == 2
-    mid = repo.record_retrieval(pid, "run_1", "exe_1", seen, cutoff=cutoff, query_template="log_events_in_window@1", truncated=False)
+    mid = repo.record_retrieval(pid, "run_1", "exe_1", seen, cutoff=cutoff, query_template="log_events_in_window@2", truncated=False)
     snapshot = q(driver, "MATCH (m:RetrievalManifest {id: $m, project_id: $p}) RETURN properties(m) AS props", m=mid, p=pid)[0]["props"]
 
     # the event happened BEFORE both earlier events but reaches TRACE only now

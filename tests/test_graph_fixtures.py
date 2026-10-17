@@ -162,8 +162,8 @@ def test_conflicting_dependency_sources_are_both_kept(repo, driver, pid):
 
 
 def test_retrieval_manifest_round_trip(repo, pid):
-    mid = repo.record_retrieval(pid, "run_1", "exe_1", ["evd_b", "evd_a", "evd_a"], cutoff=T0, query_template="runtime_observations@1", truncated=False)
-    assert mid == repo.record_retrieval(pid, "run_1", "exe_1", ["evd_a", "evd_b"], cutoff=T0, query_template="runtime_observations@1", truncated=False)
+    mid = repo.record_retrieval(pid, "run_1", "exe_1", ["evd_b", "evd_a", "evd_a"], cutoff=T0, query_template="runtime_observations@2", truncated=False)
+    assert mid == repo.record_retrieval(pid, "run_1", "exe_1", ["evd_a", "evd_b"], cutoff=T0, query_template="runtime_observations@2", truncated=False)
     assert repo.citable_ids(pid, mid) == {"evd_a", "evd_b"}
     assert repo.check_citations(pid, mid, ["evd_a", "evd_zzz"]) == ["evd_zzz"]
 

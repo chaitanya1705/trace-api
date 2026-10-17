@@ -16,6 +16,7 @@ MAX_EDGES = 200
 EXPANSION_PREFIXES = ("callers_", "potential_exposure")
 FULLTEXT_CANDIDATES = 500
 MAX_HOPS = 4  # default 2, ceiling 4 (O8)
+BROWSER_OBSERVATION_EXCLUSION = "NOT (coalesce(e.origin_detail, '') CONTAINS '(untrusted browser observation)')"
 
 
 @dataclass(frozen=True)
@@ -57,21 +58,21 @@ TEMPLATES: dict[str, Template] = {
             "exact source excerpt candidates at one repository revision",
         ),
         Template(
-            "runtime_observations", 1,
+            "runtime_observations", 2,
             "MATCH (e:Entity:EvidenceRecord)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
             "WHERE e.project_id = $project_id AND e.environment_id = $environment_id "
             "AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) "
-            "AND e.ingested_at <= datetime($cutoff) "
+            f"AND e.ingested_at <= datetime($cutoff) AND {BROWSER_OBSERVATION_EXCLUSION} "
             "RETURN e.id AS id, e.event_time AS event_time, e.content_hash AS content_hash, labels(e) AS labels, e.redacted_content AS redacted_content "
             "ORDER BY e.event_time LIMIT $limit",
             frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),
             "observations known at the investigation cutoff, inside the window (event time, not ingest time)",
         ),
         Template(
-            "unknown_time_observations", 1,
+            "unknown_time_observations", 2,
             "MATCH (e:Entity:EvidenceRecord)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
             "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND e.event_time IS NULL "
-            "AND e.ingested_at <= datetime($cutoff) "
+            f"AND e.ingested_at <= datetime($cutoff) AND {BROWSER_OBSERVATION_EXCLUSION} "
             "RETURN e.id AS id, e.ingested_at AS ingested_at, e.content_hash AS content_hash "
             "ORDER BY e.ingested_at LIMIT $limit",
             frozenset({"project_id", "service_id", "environment_id", "cutoff", "limit"}),
@@ -137,10 +138,10 @@ TEMPLATES: dict[str, Template] = {
             "full-text candidates, scope-filtered before leaving the graph layer; the global candidate pool is bounded, so truncation is reported",
         ),
         Template(
-            "log_events_in_window", 1,
+            "log_events_in_window", 2,
             "MATCH (e:Entity:LogEvent)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
             "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND ($include_info OR e.severity <> 'info') "
-            "AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) "
+            f"AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) AND {BROWSER_OBSERVATION_EXCLUSION} "
             "OPTIONAL MATCH (e)-[:ASSOCIATED_WITH]->(d:Entity:Deployment {project_id: $project_id}) "
             "RETURN e.id AS id, e.event_time AS event_time, e.severity AS severity, e.message AS message, e.source_locator AS route, "
             "e.content_hash AS content_hash, d.id AS deployment_id ORDER BY e.event_time LIMIT $limit",
@@ -171,10 +172,10 @@ TEMPLATES: dict[str, Template] = {
             "changes that produced a revision and the symbols they modified on each side",
         ),
         Template(
-            "evidence_by_operation", 1,
+            "evidence_by_operation", 2,
             "MATCH (e:Entity:EvidenceRecord)-[:OBSERVED_ON]->(s:Entity:Service {id: $service_id, project_id: $project_id}) "
             "WHERE e.project_id = $project_id AND e.environment_id = $environment_id AND e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) "
-            "AND e.ingested_at <= datetime($cutoff) AND any(l IN labels(e) WHERE l = 'LogEvent') "
+            f"AND e.ingested_at <= datetime($cutoff) AND {BROWSER_OBSERVATION_EXCLUSION} AND any(l IN labels(e) WHERE l = 'LogEvent') "
             "RETURN e.severity AS severity, e.source_locator AS operation, count(*) AS events, collect(e.id)[..3] AS sample_ids, min(e.event_time) AS first, max(e.event_time) AS last "
             "ORDER BY events DESC LIMIT $limit",
             frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),
@@ -190,10 +191,10 @@ TEMPLATES: dict[str, Template] = {
             "client-side request observations and run counts for a service in a window",
         ),
         Template(
-            "code_located_in_window", 1,
+            "code_located_in_window", 2,
             "MATCH (e:Entity:LogEvent {project_id: $project_id, service_id: $service_id, environment_id: $environment_id})-[l:LOCATES]->(s:Entity:CodeSymbol {project_id: $project_id})"
             "<-[:DEFINES]-(f:Entity:SourceFile {project_id: $project_id}) "
-            "WHERE e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) "
+            f"WHERE e.event_time >= datetime($window_start) AND e.event_time < datetime($window_end) AND e.ingested_at <= datetime($cutoff) AND {BROWSER_OBSERVATION_EXCLUSION} "
             "RETURN s.id AS id, s.qualified_name AS name, s.kind AS kind, f.path AS path, f.revision_id AS revision_id, s.start_line AS start_line, s.end_line AS end_line, "
             "count(DISTINCT e) AS events, collect(DISTINCT l.certainty) AS certainty, collect(DISTINCT e.id)[..3] AS sample_event_ids ORDER BY events DESC, name LIMIT $limit",
             frozenset({"project_id", "service_id", "environment_id", "window_start", "window_end", "cutoff", "limit"}),

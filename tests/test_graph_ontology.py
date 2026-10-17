@@ -275,6 +275,13 @@ def test_every_template_is_scoped_and_bounded():
             assert f"${p}" in t.cypher, (t.name, p)
 
 
+def test_investigator_runtime_templates_exclude_untrusted_browser_events():
+    for name in ("runtime_observations", "unknown_time_observations", "log_events_in_window", "evidence_by_operation", "code_located_in_window"):
+        template = Q.TEMPLATES[name]
+        assert template.version == 2
+        assert "untrusted browser observation" in template.cypher
+
+
 def test_caller_templates_stay_within_hop_ceiling_and_filter_builds():
     assert [n for n in Q.TEMPLATES if n.startswith("callers_")] == ["callers_1hop", "callers_2hop", "callers_3hop", "callers_4hop"]
     assert "build_id IN $build_ids" in Q.TEMPLATES["callers_2hop"].cypher

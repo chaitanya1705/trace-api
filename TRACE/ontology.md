@@ -126,7 +126,7 @@ Store evidence_ids as references only when actual cited entities exist; complex 
 
 Keep independent dimensions: origin (code/configuration/provider_metadata/telemetry/human), derivation (extracted/resolved/inferred/ambiguous/declared), verification (unverified/corroborated/disputed), and assessment status. Retain original Graphify confidence string and version. EXTRACTED means source evidence of structure, not runtime observation or a causal probability. Unknown upstream fields preserve raw metadata in artifact and raise mapping warning.
 
-Statements from tickets, code comments and previous model answers are not automatically trusted. Prior findings may guide retrieval but fresh claims cite primary evidence and identify historical analogy separately. Human evidence stores actor and claimed timestamp; no relabeling as provider telemetry.
+Statements from tickets, code comments and previous model answers are not automatically trusted. Prior findings may guide retrieval but fresh claims cite primary evidence and identify historical analogy separately. Human evidence stores actor and claimed timestamp; no relabeling as provider telemetry. Browser-origin LogEvents remain stored with an explicit untrusted provenance marker, but investigator retrieval templates, bot event views and severity aggregates exclude them; a future reporter pathway must be separately labelled and authorized.
 
 ## O6. Time, deployments and historical views
 

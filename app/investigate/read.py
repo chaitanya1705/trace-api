@@ -226,7 +226,8 @@ def evidence_graph(driver, db: str, project_id: str, run_id: str) -> dict:
                     edges.append({"source": r["c"], "target": m["id"], "type": "MODIFIES"})
         sym_ids = [i for i in items.get("code_located_in_window", []) if i.startswith("sym_")]
         for r in _rows(s, "MATCH (run:Entity:InvestigationRun {id: $r}) MATCH (e:Entity:LogEvent {project_id: $p})-[l:LOCATES]->(sym:Entity:CodeSymbol {project_id: $p}) "
-                          "WHERE sym.id IN $syms AND e.event_time >= run.window_start - duration('PT5M') AND e.event_time < run.window_end + duration('PT5M') "
+                          "WHERE sym.id IN $syms AND NOT (coalesce(e.origin_detail, '') CONTAINS '(untrusted browser observation)') "
+                          "AND e.event_time >= run.window_start - duration('PT5M') AND e.event_time < run.window_end + duration('PT5M') "
                           "RETURN e.severity AS sev, sym.id AS sym, sym.qualified_name AS name, count(DISTINCT e) AS n, min(e.message) AS msg", p=project_id, r=run_id, syms=sym_ids):
             gid = f"logs:{r['sev']}:{r['sym']}"
             node(gid, f"{r['n']} {r['sev']} event{'s' if r['n'] > 1 else ''}", "logs", severity=r["sev"], count=r["n"], detail=r["msg"])

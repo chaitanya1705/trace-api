@@ -6,6 +6,8 @@ Accepted shape (aliases in brackets) - it deliberately matches ShopFlow's own di
   message                  required text (redacted, capped)
   level                    INFO|WARNING|ERROR|CRITICAL (any case)
   request_id, run_id, component_id [service], operation, event_name, duration_ms, error_type, source_revision [revision], deployment_id,
+  source (optional; "browser" marks an untrusted client-side observation; omitted means an app-reported event),
+  related_request_id (optional; browser-only client claim, kept separate from request_id),
   environment              environment key; otherwise the source's configured default environment applies
 """
 from __future__ import annotations
@@ -46,13 +48,22 @@ def normalize_app_event(ev: Any, default_env: str | None) -> LogRow | None:
         extra["source_revision"] = str(rev)[:80]
     if ev.get("service") and "component_id" not in extra:
         extra["component_id"] = str(ev["service"])[:80]
+    supplied_source = ev.get("source")
+    if supplied_source not in (None, "app", "browser"):
+        return None
+    source = supplied_source or "app"
     extra["via"] = "app_push"
+    if source == "browser":
+        extra["trust_class"] = "untrusted_browser"
+        related_request_id = _s(ev.get("related_request_id"), 120)
+        if related_request_id:
+            extra["client_reported_related_request_id"] = related_request_id
     if truncated:
         extra["message_truncated"] = True
     env = _s(ev.get("environment"), 40)
     sc = ev.get("status_code")
     return LogRow(
-        source_record_key=key, event_time=et, level=_LEVELS.get(str(ev.get("level") or "").upper()), source="app", provider_project_id="",
+        source_record_key=key, event_time=et, level=_LEVELS.get(str(ev.get("level") or "").upper()), source=source, provider_project_id="",
         deployment_id=_s(ev.get("deployment_id"), 120), request_id=_s(ev.get("request_id"), 120),
         status_code=sc if isinstance(sc, int) and not isinstance(sc, bool) else None,
         service_hint=_s(ev.get("operation") or extra.get("component_id"), 300), message=text,

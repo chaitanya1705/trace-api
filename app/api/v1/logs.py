@@ -222,6 +222,7 @@ async def search_logs(
         "SELECT (SELECT count(*) FROM connections WHERE project_id=%s AND provider='generic' AND kind='telemetry' AND status='connected') AS app_sources,"
         " (SELECT count(*) FROM log_scope_entries WHERE project_id=%s) AS hosting_resources", (ctx.project_id, ctx.project_id))).fetchone()
     out = [{**{k: r[k] for k in ("id", "event_time", "ingested_at", "level", "source", "service_hint", "request_id", "status_code", "deployment_id", "environment_key", "extra", "graph_status", "provider")},
+            "trust_class": "untrusted_browser" if r["source"] == "browser" else "app_reported" if r["provider"] == "app_push" else "provider_reported",
             "message": (r["message"] or "")[:2000]} for r in rows]
     nxt = encode_cursor({"t": rows[-1]["sort_t"].isoformat(), "id": str(rows[-1]["id"])}) if more else None
     return wrap(request, out, next_cursor=nxt,

@@ -12,6 +12,8 @@ from app.graph.queries import escape_lucene
 
 MAX_ROWS = 25
 MAX_TEXT = 700
+# Browser observations are retained for provenance and diagnostics, but are not investigator evidence.
+TRUSTED_OBSERVATION = "NOT (coalesce(e.origin_detail, '') CONTAINS '(untrusted browser observation)')"
 
 
 def _v(x: Any) -> Any:
@@ -61,8 +63,9 @@ class GraphTools:
 
     # ---- orientation ------------------------------------------------------------------------------------------------
     def graph_overview(self) -> dict:
-        counts = self._run("MATCH (n:Entity) WHERE n.project_id IN $pids RETURN coalesce([l IN labels(n) WHERE NOT l IN ['Entity','EvidenceRecord']][0], 'EvidenceRecord') AS label, count(*) AS n ORDER BY n DESC")
-        ev = self._run("MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids RETURN min(e.event_time) AS first, max(e.event_time) AS last, "
+        counts = self._run("MATCH (n:Entity) WHERE n.project_id IN $pids AND (NOT n:LogEvent OR NOT (coalesce(n.origin_detail, '') CONTAINS '(untrusted browser observation)')) "
+                           "RETURN coalesce([l IN labels(n) WHERE NOT l IN ['Entity','EvidenceRecord']][0], 'EvidenceRecord') AS label, count(*) AS n ORDER BY n DESC")
+        ev = self._run(f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} RETURN min(e.event_time) AS first, max(e.event_time) AS last, "
                        "sum(CASE WHEN e.severity IN ['error','fatal','critical'] THEN 1 ELSE 0 END) AS errors, count(*) AS total")
         svc = self._run("MATCH (s:Entity:Service) WHERE s.project_id IN $pids RETURN s.id AS id, s.name AS caption, s.project_id AS project")
         env = self._run("MATCH (s:Entity:Environment) WHERE s.project_id IN $pids RETURN s.id AS id, s.name AS caption")
@@ -76,7 +79,7 @@ class GraphTools:
             return {"results": []}
         rows = self._run(
             "CALL db.index.fulltext.queryNodes('entity_caption', $q, {limit: 200}) YIELD node, score WHERE node.project_id IN $pids "
-            "AND ($label IS NULL OR $label IN labels(node)) "
+            "AND ($label IS NULL OR $label IN labels(node)) AND (NOT node:LogEvent OR NOT (coalesce(node.origin_detail, '') CONTAINS '(untrusted browser observation)')) "
             "RETURN node.id AS id, labels(node) AS labels, coalesce(node.name, node.title, node.qualified_name, node.path, node.statement, node.summary, "
             "node.message, node.operation, node.display_id) AS caption, node.severity AS severity, node.event_time AS event_time, node.project_id AS project, score "
             "ORDER BY score DESC LIMIT $limit", q=q, label=label if label in O.NODES else None, limit=_lim(limit, 12))
@@ -84,13 +87,14 @@ class GraphTools:
         return {"results": self._note(out)}
 
     def get_node(self, id: str, depth: int = 1) -> dict:
-        n = self._run("MATCH (n:Entity {id: $id}) WHERE n.project_id IN $pids RETURN n, labels(n) AS labels", id=id)
+        n = self._run("MATCH (n:Entity {id: $id}) WHERE n.project_id IN $pids AND (NOT n:LogEvent OR NOT (coalesce(n.origin_detail, '') CONTAINS '(untrusted browser observation)')) RETURN n, labels(n) AS labels", id=id)
         if not n:
             return {"error": "No node with that id in the projects you can read."}
         node = {**_clean(dict(n[0]["n"])), "id": id, "type": _primary(n[0]["labels"])}
         hops = 2 if depth == 2 else 1
         rels = self._run(
             f"MATCH (n:Entity {{id: $id}})-[r*1..{hops}]-(m:Entity) WHERE n.project_id IN $pids AND m.project_id = n.project_id "
+            "AND (NOT m:LogEvent OR NOT (coalesce(m.origin_detail, '') CONTAINS '(untrusted browser observation)')) "
             "WITH r[-1] AS last, m, size(r) AS hop "
             "RETURN type(last) AS rel, startNode(last).id = m.id AS incoming, hop, m.id AS id, labels(m) AS labels, "
             "coalesce(m.name, m.title, m.qualified_name, m.path, m.statement, m.summary, m.message, m.display_id, m.operation) AS caption, m.severity AS severity "
@@ -138,7 +142,7 @@ class GraphTools:
         """Log evidence grouped by service, severity and operation, newest first. Counts come from the graph, not from the model."""
         rows = self._run(
             "MATCH (e:Entity:LogEvent)-[:OBSERVED_ON]->(s:Entity:Service) WHERE e.project_id IN $pids AND s.project_id = e.project_id "
-            "AND ($service IS NULL OR toLower(s.name) CONTAINS toLower($service)) AND ($sev IS NULL OR e.severity = $sev) "
+            f"AND {TRUSTED_OBSERVATION} AND ($service IS NULL OR toLower(s.name) CONTAINS toLower($service)) AND ($sev IS NULL OR e.severity = $sev) "
             "RETURN s.name AS service, e.severity AS severity, e.source_locator AS operation, count(*) AS events, "
             "min(e.event_time) AS first, max(e.event_time) AS last, collect(e.id)[..3] AS sample_ids "
             "ORDER BY CASE e.severity WHEN 'fatal' THEN 0 WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warn' THEN 2 WHEN 'warning' THEN 2 ELSE 3 END, events DESC LIMIT 30",
@@ -147,13 +151,13 @@ class GraphTools:
             for i in r["sample_ids"]:
                 self.seen[i] = f"{r['severity']} {r['operation']}"
             r["first"], r["last"] = _v(r["first"]), _v(r["last"])
-        totals = self._run("MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids RETURN e.severity AS severity, count(*) AS events ORDER BY events DESC")
+        totals = self._run(f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} RETURN e.severity AS severity, count(*) AS events ORDER BY events DESC")
         return {"severity_totals": totals, "groups": rows,
                 "note": "Only error/fatal/critical events indicate failures. info events are normal operation."}
 
     def recent_events(self, severity: str | None = None, text: str | None = None, limit: int = 12) -> dict:
         rows = self._run(
-            "MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND ($sev IS NULL OR e.severity = $sev) "
+            f"MATCH (e:Entity:LogEvent) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} AND ($sev IS NULL OR e.severity = $sev) "
             "AND ($text IS NULL OR toLower(coalesce(e.redacted_content, e.message)) CONTAINS toLower($text)) "
             "OPTIONAL MATCH (e)-[:OBSERVED_ON]->(s:Entity:Service) OPTIONAL MATCH (e)-[:ASSOCIATED_WITH]->(d:Entity:Deployment) "
             "RETURN e.id AS id, e.severity AS severity, e.event_time AS event_time, e.message AS caption, e.source_locator AS operation, e.request_id AS request_id, "
@@ -162,7 +166,7 @@ class GraphTools:
         return {"events": self._note([{**r, "event_time": _v(r["event_time"])} for r in rows])}
 
     def request_trace(self, request_id: str) -> dict:
-        rows = self._run("MATCH (e:Entity:LogEvent {request_id: $rid}) WHERE e.project_id IN $pids "
+        rows = self._run(f"MATCH (e:Entity:LogEvent {{request_id: $rid}}) WHERE e.project_id IN $pids AND {TRUSTED_OBSERVATION} "
                          "RETURN e.id AS id, e.severity AS severity, e.event_time AS event_time, e.message AS caption, left(e.redacted_content, 300) AS content "
                          "ORDER BY e.event_time LIMIT 40", rid=request_id)
         return {"events": self._note([{**r, "event_time": _v(r["event_time"])} for r in rows])}
@@ -179,7 +183,7 @@ class GraphTools:
     def code_for_event(self, event_id: str) -> dict:
         """Code symbols that an event's stack trace resolves to (LOCATES), with file and lines."""
         rows = self._run(
-            "MATCH (e:Entity {id: $id})-[l:LOCATES]->(s:Entity:CodeSymbol)<-[:DEFINES]-(f:Entity:SourceFile) WHERE e.project_id IN $pids "
+            f"MATCH (e:Entity {{id: $id}})-[l:LOCATES]->(s:Entity:CodeSymbol)<-[:DEFINES]-(f:Entity:SourceFile) WHERE e.project_id IN $pids AND (NOT e:LogEvent OR {TRUSTED_OBSERVATION}) "
             "RETURN s.id AS id, s.qualified_name AS caption, f.path AS path, s.start_line AS start_line, s.end_line AS end_line, l.certainty AS certainty LIMIT 10", id=event_id)
         return {"code": self._note(rows)}
 
