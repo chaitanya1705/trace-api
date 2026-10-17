@@ -1,0 +1,17 @@
+.venv
+.git
+.env
+.env.*
+!.env.example
+secrets
+*.pem
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+tests
+scripts
+trace_api.egg-info
+TRACE
+.worker2.*

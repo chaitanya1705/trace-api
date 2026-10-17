@@ -64,6 +64,8 @@ def read_state(c: Container, state: str) -> dict:
 
 
 def web_origin(c: Container) -> str | None:
+    if c.settings.trace_web_origin:
+        return c.settings.trace_web_origin.rstrip("/")
     return next((o for o in c.settings.allowed_origins if "localhost" in o or o.startswith("https://")), None)
 
 
