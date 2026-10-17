@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -29,6 +30,78 @@ MAX_BATCHES = 20       # per job: bounded work, the job re-queues itself if more
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 120
 GAP_COLUMNS = "reason IS NOT NULL OR rejected > 0 OR out_of_scope > 0 OR truncated > 0 OR unmapped > 0"
+LOOKUP_MAX = 10       # deployments fetched from the provider per call
+
+log = logging.getLogger(__name__)
+
+
+# ---- deployments the events name ---------------------------------------------------------------------------------
+async def link_unknown_deployments(c: Container, project_id: UUID, deployment_ids: set[str]) -> int:
+    """Fetch deployments that events name but TRACE has not synced yet (one provider read per id, bounded), so the events can be
+    tied to the deployment's service instead of being stored with none. Only deployments of Vercel projects in this project's
+    log scope are kept. Provider reads happen outside any transaction; a failed read leaves those events without a service."""
+    from app.connectors.base import ProviderError
+    from app.domain.connections import service as svc
+    from app.jobs.handlers.deployments import upsert_deployment
+
+    ids = sorted(deployment_ids)
+    if not ids:
+        return 0
+    async with c.pool.connection() as conn:
+        known = {r["provider_deployment_id"] for r in await (await conn.execute(
+            "SELECT provider_deployment_id FROM deployments WHERE project_id=%s AND provider_deployment_id = ANY(%s)", (project_id, ids))).fetchall()}
+        missing = [i for i in ids if i not in known][:LOOKUP_MAX]
+        row = await (await conn.execute(
+            "SELECT * FROM connections WHERE project_id=%s AND provider='vercel' AND status NOT IN ('disconnected','revoked') ORDER BY created_at LIMIT 1",
+            (project_id,))).fetchone() if missing else None
+        if row is None:
+            return 0
+        secret = await svc.active_secret(conn, c.vault, row)
+        scoped = {r["provider_resource_id"] for r in await (await conn.execute(
+            "SELECT provider_resource_id FROM log_scope_entries WHERE connection_id=%s", (row["id"],))).fetchall()}
+        env_ids = {r["environment_key"]: r["id"] for r in await (await conn.execute(
+            "SELECT id, environment_key FROM environments WHERE project_id=%s", (project_id,))).fetchall()}
+        await conn.commit()
+    client, http = svc.build_adapter(c, row, secret)
+    found: list[dict] = []
+    try:
+        for dpl in missing:
+            try:
+                d = await client.deployment(dpl)
+            except ProviderError as e:
+                log.warning("deployment lookup %s failed: %s", dpl, e.code)
+                continue
+            if d.get("projectId") in scoped:
+                found.append(d)
+    finally:
+        await http.aclose()
+    if found:
+        async with c.pool.connection() as conn:
+            for d in found:
+                await upsert_deployment(conn, row, d, d["projectId"], env_ids)
+            await conn.commit()
+    return len(found)
+
+
+async def relink_unlinked(c: Container, project_id: UUID) -> int:
+    """Events applied before their deployment was known carry no service, so the investigator cannot see them. Once the
+    deployment is known (fetched here, or by a deployment sync) they are queued again with a re-link scope: the graph keeps
+    each event node exactly as first written and gains the service and deployment edges. Recent events only (7 days)."""
+    unlinked = ("i.project_id=%s AND i.graph_status='applied' AND i.deployment_id IS NOT NULL AND COALESCE(i.source,'') <> 'browser'"
+                " AND i.graph_scope->>'service_key' IS NULL AND i.graph_scope->>'relink' IS NULL AND i.ingested_at > now() - interval '7 days'")
+    async with c.pool.connection() as conn:
+        ids = {r["deployment_id"] for r in await (await conn.execute(
+            f"SELECT DISTINCT i.deployment_id FROM evidence_inbox i WHERE {unlinked}", (project_id,))).fetchall()}
+    if not ids:
+        return 0
+    await link_unknown_deployments(c, project_id, ids)
+    async with c.pool.connection() as conn:
+        n = (await conn.execute(
+            "UPDATE evidence_inbox i SET graph_scope='{\"relink\": true}'::jsonb, graph_status='pending', graph_attempts=0, graph_error=NULL,"
+            f" graph_next_attempt_at=now() WHERE {unlinked}"
+            " AND EXISTS (SELECT 1 FROM deployments d WHERE d.project_id=i.project_id AND d.provider_deployment_id=i.deployment_id)", (project_id,))).rowcount
+        await conn.commit()
+    return n
 
 
 # ---- claiming ----------------------------------------------------------------------------------------------------
@@ -56,7 +129,7 @@ async def claim_rows(conn: AsyncConnection, project_id: UUID, owner: str, *, lim
 async def resolve_scopes(conn: AsyncConnection, project_id: UUID, rows: list[dict]) -> None:
     """Decide, once per row, which service and deployment it belongs to, and keep the decision on the row. A retry then writes exactly the
     same node even if a deployment row appeared in between. Nothing is guessed: no mapping means no service (and no edge)."""
-    need = [r for r in rows if r["graph_scope"] is None]
+    need = [r for r in rows if r["graph_scope"] is None or r["graph_scope"].get("relink")]
     if not need:
         return
     deps = {d["provider_deployment_id"]: d for d in await (await conn.execute(
@@ -71,6 +144,8 @@ async def resolve_scopes(conn: AsyncConnection, project_id: UUID, rows: list[dic
         "SELECT id, config->>'service_key' AS svc FROM connections WHERE project_id=%s AND config ? 'service_key'", (project_id,))).fetchall()}
     for r in need:
         sc: dict[str, Any] = {"service_key": None, "service_name": None, "service_via": None, "deployment": None}
+        if r["graph_scope"] is not None:
+            sc["relink"] = True
         d = deps.get(r["deployment_id"]) if r["deployment_id"] else None
         pp = r["provider_project_id"]
         if d:
@@ -80,7 +155,8 @@ async def resolve_scopes(conn: AsyncConnection, project_id: UUID, rows: list[dic
             sc.update(service_key=nm or pp, service_name=nm, service_via="log_scope")
         elif declared.get(r["connection_id"]):
             sc.update(service_key=declared[r["connection_id"]], service_name=declared[r["connection_id"]], service_via="source_scope")
-        await conn.execute("UPDATE evidence_inbox SET graph_scope=%s::jsonb WHERE id=%s AND graph_scope IS NULL", (json.dumps(sc), r["id"]))
+        await conn.execute("UPDATE evidence_inbox SET graph_scope=%s::jsonb WHERE id=%s AND (graph_scope IS NULL OR graph_scope->>'service_via' IS NULL)",
+                           (json.dumps(sc), r["id"]))
         r["graph_scope"] = sc
     await conn.commit()
 
@@ -168,14 +244,16 @@ async def apply_pending(c: Container, organization_id: UUID, project_id: UUID, o
         raise RuntimeError("graph not configured")
     repo = GraphRepository(driver, c.settings.neo4j_database)
     total = ApplyReport()
-    out: dict[str, Any] = {"applied": 0, "failed": 0, "batches": 0}
+    out: dict[str, Any] = {"applied": 0, "failed": 0, "batches": 0, "relinked": await relink_unlinked(c, project_id)}
     for _ in range(max_batches):
         if check_cancel:
             await check_cancel()
         async with c.pool.connection() as conn:
             rows = await claim_rows(conn, project_id, owner, limit=BATCH)
-            if not rows:
-                break
+        if not rows:
+            break
+        await link_unknown_deployments(c, project_id, {r["deployment_id"] for r in rows if r["deployment_id"] and (r["graph_scope"] is None or r["graph_scope"].get("relink"))})
+        async with c.pool.connection() as conn:
             await resolve_scopes(conn, project_id, rows)
             bundle = await collect(conn, project_id, rows, [])
         ids = [r["id"] for r in rows]

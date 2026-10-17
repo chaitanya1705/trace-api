@@ -8,6 +8,7 @@ They are used as the Deployment->Revision mapping when present; absent => ambigu
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,6 +67,14 @@ class VercelClient:
                 params[k] = v
         body = (await self._get("/v7/deployments", "Read deployments", params)).json()
         return body.get("deployments", []), (body.get("pagination") or {}).get("next")
+
+    async def deployment(self, deployment_id: str) -> dict:
+        """One deployment by id (v13 names it `id`; the list endpoint's rows call it `uid`, so both are set)."""
+        if not re.fullmatch(r"dpl_[A-Za-z0-9]{1,64}", deployment_id):
+            raise ProviderError("invalid_request", "Read deployment: not a Vercel deployment id", retryable=False)
+        d = (await self._get(f"/v13/deployments/{deployment_id}", "Read deployment")).json()
+        d.setdefault("uid", d.get("id"))
+        return d
 
 
 async def tail_runtime_logs(client: VercelClient, project_id: str, deployment_id: str, *, seconds: float, max_lines: int = 2000):
