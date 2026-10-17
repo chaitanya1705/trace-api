@@ -1,9 +1,8 @@
-import base64
 import uuid
 
 import pytest
 
-from app.auth.authz import Cap, caps_for, can_invite_role, effective_caps
+from app.auth.authz import Cap, can_invite_role, caps_for, effective_caps
 from app.config import ConfigError, Settings, load_settings
 from app.storage.secrets import Sealed, Vault, VaultError, generate_key, mask
 

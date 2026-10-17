@@ -8,3 +8,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+secrets/
+*.pem
+
+.api.out
+.api.err
+.worker.out
+.worker.err

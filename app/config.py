@@ -20,8 +20,16 @@ class Settings(BaseSettings):
 
     trace_env: Literal["development", "test", "production"] = "development"
 
-    # Control plane (Supabase Postgres + Auth)
+    # Identity: 'supabase' (production), 'local' (dev HS256 tokens) or 'off' (dev: no login, fixed dev user)
+    auth_mode: Literal["supabase", "local", "off"] = "supabase"
+    local_auth_secret: str = "dev-only-change-me-dev-only-change-me"
+
+    # Control plane (any Postgres; Supabase Postgres in production)
     database_url: str | None = None
+    # Apply pending SQL migrations at API/worker startup (guarded by a Postgres advisory lock, so several instances
+    # starting together are safe). Use Supabase's direct or session-mode connection string; transaction-mode
+    # pooling (port 6543) does not hold session advisory locks reliably.
+    auto_migrate: bool = True
     supabase_url: str | None = None
     supabase_jwks_url: str | None = None
     supabase_jwt_audience: str = "authenticated"
@@ -43,12 +51,19 @@ class Settings(BaseSettings):
     # Older keys kept only to decrypt existing ciphertext during manual re-encryption: "1:<b64>,2:<b64>"
     trace_secret_keys_previous: str | None = None
 
+    # Demo environment built by a collaborator (separate repos). Optional placeholders: TRACE works without them and
+    # reports them as "not configured". TRACE never hardcodes these and never hands evaluator data to the investigator.
+    pulselab_url: str | None = None          # browser-only traffic generator; its JSON export feeds ticket intake (T-010)
+    shopflow_web_url: str | None = None
+    shopflow_api_url: str | None = None      # the backend TRACE's connected Vercel project/GitHub repo describe
+
     trace_public_origin: str = "http://localhost:8000"
     trace_allowed_origins: str = "http://localhost:3000"
 
     # GitHub: read-plane and remediation-plane are separate apps (A13)
     github_app_id: str | None = None
     github_app_private_key: str | None = None
+    github_app_private_key_path: str | None = None   # easier than a multi-line env value; file stays out of git
     github_webhook_secret: str | None = None
     github_remediation_app_id: str | None = None
     github_remediation_private_key: str | None = None
@@ -68,6 +83,27 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(15, ge=1)
     job_max_attempts: int = Field(3, ge=1)
     ingest_max_body_bytes: int = 1024 * 1024
+
+    @model_validator(mode="after")
+    def _load_key_file(self) -> Settings:
+        if self.github_app_private_key_path and not self.github_app_private_key:
+            from pathlib import Path
+
+            try:
+                self.github_app_private_key = Path(self.github_app_private_key_path).read_text(encoding="utf-8")
+            except OSError:
+                raise ValueError("github_app_private_key_path is not readable") from None
+        return self
+
+    @field_validator("pulselab_url", "shopflow_web_url", "shopflow_api_url", mode="before")
+    @classmethod
+    def _http_url(cls, v):
+        if v in (None, ""):
+            return None
+        v = str(v).strip().rstrip("/")
+        if not v.startswith(("https://", "http://")) or " " in v:
+            raise ValueError("must be an http(s) URL")
+        return v
 
     @field_validator("trace_secret_key")
     @classmethod
@@ -103,19 +139,33 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError("missing required settings: " + ", ".join(m.upper() for m in missing))
+        if self.auth_mode in ("local", "off") and self.trace_env == "production":
+            raise ValueError("auth_mode local/off is not allowed in production")
         if self.graph_default_hops > self.graph_max_hops:
             raise ValueError("graph_default_hops exceeds graph_max_hops")
         return self
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [o.strip() for o in self.trace_allowed_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.trace_allowed_origins.split(",") if o.strip()]
+        # PulseLab is a browser app that will POST symptom tickets to the intake API, so its origin must pass CORS.
+        if self.pulselab_url and self.pulselab_url not in origins:
+            origins.append(self.pulselab_url)
+        return origins
+
+    @property
+    def remediation_app(self) -> tuple[str | None, str | None]:
+        """POC decision: with no separate remediation app configured, draft-PR writes (phase 3) reuse the single app."""
+        if self.github_remediation_app_id and self.github_remediation_private_key:
+            return self.github_remediation_app_id, self.github_remediation_private_key
+        return self.github_app_id, self.github_app_private_key
 
     def capability_report(self) -> dict[str, bool]:
         """Names and on/off only - safe to log at startup."""
         return {
             "database": bool(self.database_url),
-            "supabase_auth": bool(self.supabase_jwks_url),
+            "auth": self.auth_mode != "supabase" or bool(self.supabase_jwks_url),
+            "auth_mode": self.auth_mode,
             "neo4j": bool(self.neo4j_uri),
             "model": bool(self.openai_api_key),
             "secret_vault": bool(self.trace_secret_key),

@@ -15,7 +15,7 @@ from app.audit import audit
 from app.auth.authz import can_invite_role
 from app.auth.deps import current_principal, get_conn
 from app.auth.jwt import Principal
-from app.envelope import wrap
+from app.envelope import Envelope, wrap
 from app.errors import Conflict, Forbidden, NotFound, Unprocessable
 
 router = APIRouter(tags=["identity"])
@@ -28,6 +28,41 @@ class InviteIn(BaseModel):
     role: Role
 
 
+class MembershipOut(BaseModel):
+    organization_id: UUID
+    organization_name: str
+    role: str
+
+
+class UserOut(BaseModel):
+    id: UUID
+    email: str | None
+    display_name: str | None
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    memberships: list[MembershipOut]
+
+
+class InvitationCreated(BaseModel):
+    id: UUID
+    email: str
+    role: str
+    expires_at: datetime
+    token: str  # one-time; shown once, only its hash is stored
+
+
+class InvitationState(BaseModel):
+    id: UUID
+    status: str
+
+
+class AcceptedOut(BaseModel):
+    organization_id: UUID
+    role: str
+
+
 class AcceptIn(BaseModel):
     token: str = Field(min_length=20, max_length=200)
 
@@ -36,8 +71,24 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-@router.get("/me")
+class PublicConfig(BaseModel):
+    auth_mode: str  # 'off' => the web app should skip login and open the workspace directly
+
+
+@router.get("/config", response_model=Envelope[PublicConfig])
+async def public_config(request: Request):
+    """Unauthenticated, non-secret. The landing page's 'Open workspace' goes straight in when auth_mode is 'off'."""
+    return wrap(request, {"auth_mode": request.app.state.container.settings.auth_mode})
+
+
+@router.get("/me", response_model=Envelope[MeOut])
 async def me(request: Request, p: Principal = Depends(current_principal), conn: AsyncConnection = Depends(get_conn)):
+    if request.app.state.container.settings.auth_mode == "off":
+        from app.auth.deps import _dev_membership  # no-login dev mode: first visit joins/creates the Dev Org
+
+        has = await (await conn.execute("SELECT 1 FROM memberships WHERE user_id=%s AND status='active' LIMIT 1", (p.user_id,))).fetchone()
+        if not has:
+            await _dev_membership(conn, p)
     rows = await (
         await conn.execute(
             "SELECT m.id, m.organization_id, o.name AS organization_name, m.role FROM memberships m"
@@ -72,7 +123,7 @@ async def _org_admin(conn: AsyncConnection, org_id: UUID, user_id: UUID) -> str:
     return row["role"]
 
 
-@router.post("/organizations/{org_id}/invitations", status_code=201)
+@router.post("/organizations/{org_id}/invitations", status_code=201, response_model=Envelope[InvitationCreated])
 async def create_invitation(
     org_id: UUID,
     body: InviteIn,
@@ -105,7 +156,7 @@ async def create_invitation(
     return wrap(request, {**row, "token": token})
 
 
-@router.post("/organizations/{org_id}/invitations/{invitation_id}/revoke")
+@router.post("/organizations/{org_id}/invitations/{invitation_id}/revoke", response_model=Envelope[InvitationState])
 async def revoke_invitation(
     org_id: UUID,
     invitation_id: UUID,
@@ -129,7 +180,7 @@ async def revoke_invitation(
     return wrap(request, {"id": invitation_id, "status": "revoked"})
 
 
-@router.post("/invitations/accept")
+@router.post("/invitations/accept", response_model=Envelope[AcceptedOut])
 async def accept_invitation(
     body: AcceptIn,
     request: Request,

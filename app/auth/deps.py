@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import Depends, Request
 from psycopg import AsyncConnection
 
-from app.auth.authz import ORG_ADMIN_ROLES, Cap, effective_caps
+from app.auth.authz import ORG_ADMIN_ROLES, Cap, effective_caps, project_level_caps
 from app.auth.jwt import Principal
 from app.container import Container
 from app.errors import DependencyUnavailable, Forbidden, NotFound, Unauthenticated
@@ -27,7 +27,15 @@ async def get_conn(request: Request):
         yield conn
 
 
+DEV_EMAIL = "dev@trace.local"
+
+
 async def current_principal(request: Request, c: Container = Depends(get_container)) -> Principal:
+    if c.settings.auth_mode == "off":  # development only (config forbids it in production): no login screen
+        from app.auth.local import user_id_for
+
+        email = (request.headers.get("x-dev-user") or DEV_EMAIL).strip().lower()
+        return Principal(user_id_for(email), email, email.split("@")[0])
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -35,6 +43,24 @@ async def current_principal(request: Request, c: Container = Depends(get_contain
     if c.verifier is None:
         raise DependencyUnavailable("Authentication is not configured")
     return await c.verifier.verify(token)
+
+
+def c_settings(request: Request):
+    return request.app.state.container.settings
+
+
+async def _dev_membership(conn: AsyncConnection, p: Principal) -> dict:
+    """auth_mode=off only: join (or create) the single 'Dev Org'. The first user owns it, others are investigators."""
+    org = await (await conn.execute("SELECT id FROM organizations WHERE name='Dev Org' ORDER BY created_at LIMIT 1")).fetchone()
+    first = org is None
+    if first:
+        org = await (await conn.execute("INSERT INTO organizations(name) VALUES ('Dev Org') RETURNING id")).fetchone()
+    row = await (await conn.execute(
+        "INSERT INTO memberships(organization_id,user_id,email,display_name,role) VALUES (%s,%s,%s,%s,%s)"
+        " ON CONFLICT (organization_id,user_id) DO UPDATE SET status='active' RETURNING id, organization_id, role",
+        (org["id"], p.user_id, p.email, p.display_name, "owner" if first else "admin"))).fetchone()
+    await conn.commit()
+    return row
 
 
 @dataclass(frozen=True)
@@ -67,6 +93,8 @@ async def org_context(
     except ValueError:
         raise NotFound("Organization not found") from None
     rows = await (await conn.execute(sql, params)).fetchall()
+    if not rows and c_settings(request).auth_mode == "off":
+        rows = [await _dev_membership(conn, principal)]
     if not rows:
         raise Forbidden("No active organization membership. Ask an organization owner for an invitation.")
     if len(rows) > 1:
@@ -106,10 +134,9 @@ async def load_project_context(
             (project_id, org.principal.user_id),
         )
     ).fetchall()
-    caps = effective_caps(
-        [(g["role"], None if g["environment_ids"] is None else [str(e) for e in g["environment_ids"]]) for g in grants],
-        environment_id,
-    )
+    parsed = [(g["role"], None if g["environment_ids"] is None else [str(e) for e in g["environment_ids"]])
+              for g in grants]
+    caps = effective_caps(parsed, environment_id) if environment_id else project_level_caps(parsed)
     if Cap.READ not in caps:
         raise NotFound("Project not found")
     return ProjectContext(org, project_id, caps)

@@ -25,20 +25,44 @@ async def build_container(settings: Settings) -> Container:
 
     c = Container(settings=settings)
     if settings.database_url:
+        if settings.auto_migrate:
+            from app.storage.postgres.migrate import migrate
+
+            applied = await migrate(settings.database_url)
+            if applied:
+                log.info("migrations applied", extra={"versions": applied})
         c.pool = await open_pool(settings.database_url)
-    if settings.supabase_jwks_url:
+    if settings.auth_mode == "off":
+        pass  # current_principal resolves the dev user itself
+    elif settings.auth_mode == "local":
+        from app.auth.local import LocalTokenVerifier
+
+        c.verifier = LocalTokenVerifier(settings.local_auth_secret)
+    elif settings.supabase_jwks_url:
         issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1" if settings.supabase_url else None
         c.verifier = SupabaseTokenVerifier(
             jwks_url=settings.supabase_jwks_url, issuer=issuer, audience=settings.supabase_jwt_audience
         )
     if settings.trace_secret_key:
         c.vault = Vault.from_settings(settings)
+    from app.graph.driver import create_driver, migrate_graph
+
+    driver = create_driver(settings)
+    if driver is not None:
+        c.extras["neo4j"] = driver
+        if settings.auto_migrate:
+            applied = migrate_graph(settings, driver)
+            if applied:
+                log.info("graph migrations applied", extra={"versions": applied})
     return c
 
 
 async def close_container(c: Container) -> None:
     if c.pool is not None:
         await c.pool.close()
+    driver = c.extras.get("neo4j")
+    if driver is not None:
+        driver.close()
 
 
 def create_app(settings: Settings | None = None, container: Container | None = None) -> FastAPI:
@@ -68,6 +92,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
+        # development only: any localhost/127.0.0.1 port (the web app may run on 3000, 3001, 127.0.0.1, ...)
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$" if settings.trace_env != "production" else None,
         allow_credentials=False,  # bearer tokens in the Authorization header, never cookies
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["authorization", "content-type", "idempotency-key", "x-organization-id", "x-request-id",
@@ -78,6 +104,10 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     install_error_handlers(app)
     app.include_router(health_router)
     app.include_router(api_router, prefix="/api/v1")
+    if settings.auth_mode == "local" and settings.trace_env != "production":
+        from app.api.v1 import dev
+
+        app.include_router(dev.router, prefix="/api/v1")
     return app
 
 
