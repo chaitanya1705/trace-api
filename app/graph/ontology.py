@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-ONTOLOGY_VERSION = "1.0"
+ONTOLOGY_VERSION = "1.1"
 SCHEMA_VERSION = 1
 
 # Base label every node carries (shared identity and indexing).
@@ -66,7 +66,7 @@ NODES: dict[str, NodeSpec] = {
         NodeSpec("Service", ("name", "service_key"), doc="logical component, may have many deployments"),
         NodeSpec("Resource", ("provider", "resource_type", "provider_resource_id"), doc="infrastructure or external dependency"),
         NodeSpec("Journey", ("name", "definition_source"), doc="optional business journey; never inferred from a community label"),
-        NodeSpec("SourceConnection", ("connection_id", "provider", "capabilities"), doc="non-secret provenance mirror; control DB is authoritative"),
+        NodeSpec("SourceConnection", ("connection_id", "provider", "capabilities"), ("kind", "auth_method", "status", "name"), doc="non-secret provenance mirror; control DB is authoritative"),
         NodeSpec("Repository", ("provider", "provider_repository_id", "canonical_url"), doc="project binding to a repository"),
         NodeSpec("Revision", ("repository_id", "commit_sha"), immutable=True, doc="immutable commit"),
         NodeSpec("GraphBuild", ("revision_id", "extractor_version", "output_schema_version", "ontology_version", "status", "counts"), doc="one extraction attempt of a revision"),
@@ -84,7 +84,7 @@ NODES: dict[str, NodeSpec] = {
         NodeSpec("RequestSpan", (*_EV, "trace_id", "span_id", "operation", "status"), ("event_time", "parent_span_id", "duration", *_EV_OPT), also=("EvidenceRecord",), immutable=True, doc="only when the source supplies span evidence"),
         NodeSpec("HumanObservation", (*_EV, "actor_id", "submitted_at", "check_id", "verification_status"), ("event_time", "claimed_observed_at", *_EV_OPT), also=("EvidenceRecord",), immutable=True, doc="human origin preserved"),
         NodeSpec("EvidenceGap", ("kind", "description", "scope_json", "detected_at", "status"), ("resolved_at", "source_job_id"), doc="absent/stale/partial/ambiguous/unsupported source or mapping"),
-        NodeSpec("Ticket", ("control_ticket_id", "title", "reported_at", "revision_number"), ("source_id",), doc="a report, not a proven observation"),
+        NodeSpec("Ticket", ("control_ticket_id", "title", "reported_at", "revision_number"), ("source_id", "display_id", "source", "status", "severity", "environment_key", "service_hint"), doc="a report, not a proven observation"),
         NodeSpec("InvestigationRun", ("control_run_id", "environment_id", "window_start", "window_end", "evidence_cutoff", "status"), ("manifest_id",), doc="immutable run scope"),
         NodeSpec("Step", ("run_id", "sequence", "kind", "status", "started_at"), ("finished_at",), doc="persisted execution progression"),
         NodeSpec("ToolExecution", ("run_id", "step_id", "tool_name", "input_hash", "query_version", "status", "coverage_json"), doc="manifests, not raw arguments"),
@@ -233,6 +233,18 @@ RELATIONSHIPS: dict[str, RelSpec] = {
         _r("REVIEWED_BY", ("Finding",), ("Review",), ("review_version",)),
     ]
 }
+
+# Ontology 1.1: provenance and intake are part of the graph, so every node can be traced back to where it came from.
+RELATIONSHIPS.update({
+    r.type: r
+    for r in [
+        _r("HAS_CONNECTION", ("Project",), ("SourceConnection",), doc="the project's configured source connections"),
+        _r("FROM_SOURCE", ("Repository", "Deployment", *EVIDENCE_LABELS), ("SourceConnection",), ("mapping_method",), doc="which connection supplied this fact"),
+        _r("HAS_TICKET", ("Project",), ("Ticket",)),
+        _r("REPORTED_IN", ("Ticket",), ("Environment",), ("mapping_method",), doc="environment as reported, not as proven"),
+        _r("HAS_EVIDENCE", ("Ticket",), tuple(EVIDENCE_LABELS), ("mapping_method",), doc="evidence that arrived attached to the ticket"),
+    ]
+})
 
 # Optional cross-revision identity mapping (O3): only with the algorithm and its uncertainty recorded.
 RELATIONSHIPS["CORRESPONDS_TO"] = _r("CORRESPONDS_TO", ("CodeSymbol", "SourceFile"), ("CodeSymbol", "SourceFile"), ("algorithm", "uncertainty", "evidence_ids"))

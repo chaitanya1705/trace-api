@@ -10,6 +10,7 @@ from app.connectors import vercel as vc
 from app.connectors.base import ProviderError
 from app.domain.connections import service as svc
 from app.jobs.queue import PermanentJobError, TransientJobError
+from app.jobs.triggers import request_graph_sync
 from app.jobs.worker import JobContext, handler
 
 PER_PROJECT = 50
@@ -74,6 +75,7 @@ async def sync_deployments(ctx: JobContext) -> dict:
                         " commit_sha=COALESCE(EXCLUDED.commit_sha, deployments.commit_sha), revision_mapping=EXCLUDED.revision_mapping, updated_at=now()",
                         (row["organization_id"], row["project_id"], cid, env_ids.get(ek) if ek else None, r["id"], sp["provider_resource_id"], r["name"], r["target"], r["state"],
                          r["sha"], r["ref"], r["repo"], r["mapping"], r["url"], r["created"], r["ready"]))
+                await request_graph_sync(conn, organization_id=row["organization_id"], project_id=row["project_id"])
                 await conn.commit()
             total += len(deps)
     finally:

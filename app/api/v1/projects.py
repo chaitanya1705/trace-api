@@ -33,6 +33,7 @@ from app.domain.projects.schemas import (
 )
 from app.envelope import Envelope, wrap
 from app.errors import Conflict, Forbidden, Unprocessable
+from app.jobs.triggers import request_graph_sync
 from app.pagination import clamp_limit, decode_cursor, encode_cursor
 
 router = APIRouter(tags=["projects"])
@@ -184,6 +185,7 @@ async def put_environments(
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.environments.put", target_type="project", target_id=ctx.project_id, request=request,
                 details={"keys": keys})
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     out = await (await conn.execute(
         "SELECT id, name, environment_key AS key FROM environments WHERE project_id=%s ORDER BY created_at, name",
@@ -219,6 +221,7 @@ async def put_services(
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.services.put", target_type="project", target_id=ctx.project_id, request=request,
                 details={"keys": keys})
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     out = await (await conn.execute(
         "SELECT id, name, service_key AS key FROM services WHERE project_id=%s ORDER BY name", (ctx.project_id,))).fetchall()

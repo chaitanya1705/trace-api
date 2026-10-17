@@ -34,6 +34,12 @@ class Bundle:
     environments: list[dict]
     deployments: list[dict]
     tickets: list[dict] = field(default_factory=list)
+    services: list[dict] = field(default_factory=list)
+    connections: list[dict] = field(default_factory=list)
+    repositories: list[dict] = field(default_factory=list)
+    service_mappings: list[dict] = field(default_factory=list)
+    all_tickets: list[dict] = field(default_factory=list)
+    _manifests: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -47,6 +53,9 @@ class SyncReport:
     requests: int = 0
     measurements: int = 0
     tickets: list[str] = field(default_factory=list)
+    connections: int = 0
+    repositories: int = 0
+    ticket_nodes: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, why: str, n: int = 1) -> None:
@@ -61,7 +70,34 @@ async def collect(conn: AsyncConnection, project_id: UUID) -> Bundle:
         "e.environment_key FROM deployments d LEFT JOIN environments e ON e.id = d.environment_id WHERE d.project_id=%s ORDER BY d.created_at_provider", (project_id,))).fetchall()]
     tickets = [dict(r) for r in await (await conn.execute(
         "SELECT id, number, title, payload FROM tickets WHERE project_id=%s AND payload IS NOT NULL AND source='pulselab' ORDER BY number", (project_id,))).fetchall()]
-    return Bundle(str(proj["id"]), str(proj["organization_id"]), proj["name"], envs, deps, tickets)
+    b = Bundle(str(proj["id"]), str(proj["organization_id"]), proj["name"], envs, deps, tickets)
+    q = lambda sql: conn.execute(sql, (project_id,))  # noqa: E731
+    b.services = [dict(r) for r in await (await q("SELECT name, service_key FROM services WHERE project_id=%s ORDER BY service_key")).fetchall()]
+    b.connections = [dict(r) for r in await (await q(
+        "SELECT id, provider, kind, auth_method, status, capabilities FROM connections WHERE project_id=%s ORDER BY created_at")).fetchall()]
+    b.repositories = [dict(r) for r in await (await q(
+        "SELECT b.id, b.connection_id, b.provider_repository_id, b.full_name, c.provider FROM repository_bindings b JOIN connections c ON c.id = b.connection_id "
+        "WHERE b.project_id=%s AND b.archived = false ORDER BY b.full_name")).fetchall()]
+    b.service_mappings = [dict(r) for r in await (await q(
+        "SELECT m.repository_binding_id, s.service_key, m.path_prefix, m.valid_from, m.valid_to FROM repository_service_mappings m "
+        "JOIN services s ON s.id = m.service_id WHERE m.project_id=%s")).fetchall()]
+    b.all_tickets = [dict(r) for r in await (await q(
+        "SELECT id, number, title, source, status, severity, environment_key, service_hint, revision_number, external_id, "
+        "coalesce(source_created_at, created_at) AS reported_at FROM tickets WHERE project_id=%s ORDER BY number")).fetchall()]
+    deployment_conn = {r["provider_deployment_id"]: r["connection_id"] for r in await (await q(
+        "SELECT provider_deployment_id, connection_id FROM deployments WHERE project_id=%s")).fetchall()}
+    for d in b.deployments:
+        d["connection_id"] = deployment_conn.get(d["provider_deployment_id"])
+    return b
+
+
+
+
+def _manifest(repo: GraphRepository, b: Bundle, revision_id: str) -> str:
+    """The revision's manifest id, looked up once per revision per sync (one Neo4j round trip each otherwise)."""
+    if revision_id not in b._manifests:
+        b._manifests[revision_id] = revision_manifest(repo, b.project_id, revision_id) or ""
+    return b._manifests[revision_id]
 
 
 def _t(v: str | None) -> datetime | None:
@@ -117,6 +153,16 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
             rep.services += 1
         return svc_ids[provider_project]
 
+    # Services configured in TRACE keep their own key; hosting projects become services on first deployment below.
+    for s in b.services:
+        sid = I.service_id(pid, s["service_key"])
+        repo.write_nodes([prepare_node("Service", sid, pid, {"name": s["name"], "service_key": s["service_key"]})])
+        repo.write_relationships([prepare_rel("HAS_SERVICE", "Project", prj, "Service", sid, pid, I.edge_key("HAS_SERVICE", prj, sid))])
+        rep.services += 1
+    con_ids = _write_connections(repo, b, prj)
+    rep.connections = len(con_ids)
+    rep.repositories = _write_repositories(repo, b, prj, con_ids)
+
     dep_info: dict[str, dict] = {}
     for d in b.deployments:
         ek = d["environment_key"] or (d["target"] if d["target"] in env_ids else None)
@@ -129,13 +175,81 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
         rep.deployments_with_revision += 1 if info["revision_id"] else 0
         if not info["revision_id"]:
             rep.skip("deployment_revision_not_indexed")
+        if con_ids.get(str(d.get("connection_id"))):
+            to = con_ids[str(d["connection_id"])]
+            repo.write_relationships([prepare_rel("FROM_SOURCE", "Deployment", info["id"], "SourceConnection", to, pid, I.edge_key("FROM_SOURCE", info["id"], to), {"mapping_method": "provider_api"})])
 
+    ticket_ids = _write_tickets(repo, b, prj, env_ids)
+    rep.ticket_nodes = len(ticket_ids)
     for t in b.tickets:
-        _ticket_evidence(repo, b, t, env_ids, dep_info, revs, rep)
+        _ticket_evidence(repo, b, t, env_ids, dep_info, revs, rep, ticket_ids.get(str(t["id"])))
     return rep
 
 
-def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, dep_info: dict, revs: dict, rep: SyncReport) -> None:
+def _write_connections(repo: GraphRepository, b: Bundle, prj: str) -> dict[str, str]:
+    """Non-secret mirror of each connection (provider, kind, status, capability names); the control DB stays authoritative."""
+    pid, out = b.project_id, {}
+    for c in b.connections:
+        cid = I.entity_id("SourceConnection", pid, str(c["id"]))
+        caps = c["capabilities"] if isinstance(c["capabilities"], dict) else {}
+        repo.write_nodes([prepare_node("SourceConnection", cid, pid, {
+            "connection_id": str(c["id"]), "provider": c["provider"], "kind": c["kind"], "auth_method": c["auth_method"], "status": c["status"],
+            "name": f"{c['provider']} ({c['kind']})", "capabilities": sorted(k for k, v in caps.items() if v) or ["none"],
+        })])
+        repo.write_relationships([prepare_rel("HAS_CONNECTION", "Project", prj, "SourceConnection", cid, pid, I.edge_key("HAS_CONNECTION", prj, cid))])
+        out[str(c["id"])] = cid
+    return out
+
+
+def _write_repositories(repo: GraphRepository, b: Bundle, prj: str, con_ids: dict[str, str]) -> int:
+    """Bound repositories (same identity the indexer uses) with their connection and the services they implement."""
+    pid = b.project_id
+    by_binding: dict[str, str] = {}
+    for r in b.repositories:
+        rid = I.repository_id(pid, r["provider"], r["provider_repository_id"])
+        url = f"https://github.com/{r['full_name']}" if r["provider"] == "github" else f"{r['provider']}://{r['full_name']}"
+        repo.write_nodes([prepare_node("Repository", rid, pid, {"provider": r["provider"], "provider_repository_id": r["provider_repository_id"], "canonical_url": url})])
+        rels = [prepare_rel("HAS_REPOSITORY", "Project", prj, "Repository", rid, pid, I.edge_key("HAS_REPOSITORY", prj, rid, r["provider"]), {"scope_source": r["provider"]})]
+        if con_ids.get(str(r["connection_id"])):
+            to = con_ids[str(r["connection_id"])]
+            rels.append(prepare_rel("FROM_SOURCE", "Repository", rid, "SourceConnection", to, pid, I.edge_key("FROM_SOURCE", rid, to), {"mapping_method": "repository_binding"}))
+        repo.write_relationships(rels)
+        by_binding[str(r["id"])] = rid
+    rels = []
+    known = {s["service_key"] for s in b.services}
+    for m in b.service_mappings:
+        rid = by_binding.get(str(m["repository_binding_id"]))
+        if not rid or m["service_key"] not in known:
+            continue
+        sid = I.service_id(pid, m["service_key"])
+        rels.append(prepare_rel("IMPLEMENTS_SERVICE", "Repository", rid, "Service", sid, pid, I.edge_key("IMPLEMENTS_SERVICE", rid, sid, m["path_prefix"]),
+                                {"mapping_source": "user_mapping" + (f":{m['path_prefix']}" if m["path_prefix"] else ""), "valid_from": m["valid_from"], "valid_to": m["valid_to"]}))
+    repo.write_relationships(rels)
+    return len(by_binding)
+
+
+def _write_tickets(repo: GraphRepository, b: Bundle, prj: str, env_ids: dict[str, str]) -> dict[str, str]:
+    """Every ticket of the project, as a report: the environment is linked only as reported (REPORTED_IN), never proven."""
+    pid, out, rels = b.project_id, {}, []
+    nodes = []
+    for t in b.all_tickets:
+        tid = I.entity_id("Ticket", pid, str(t["id"]))
+        nodes.append(prepare_node("Ticket", tid, pid, {
+            "control_ticket_id": str(t["id"]), "title": t["title"], "reported_at": t["reported_at"], "revision_number": t["revision_number"],
+            "display_id": f"TKT-{t['number']}", "source": t["source"], "status": t["status"], "severity": t["severity"],
+            "environment_key": t["environment_key"], "service_hint": t["service_hint"], "source_id": t["external_id"],
+        }))
+        rels.append(prepare_rel("HAS_TICKET", "Project", prj, "Ticket", tid, pid, I.edge_key("HAS_TICKET", prj, tid)))
+        env = env_ids.get((t["environment_key"] or "").lower())
+        if env:
+            rels.append(prepare_rel("REPORTED_IN", "Ticket", tid, "Environment", env, pid, I.edge_key("REPORTED_IN", tid, env), {"mapping_method": "as_reported"}))
+        out[str(t["id"])] = tid
+    repo.write_nodes(nodes)
+    repo.write_relationships(rels)
+    return out
+
+
+def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, dep_info: dict, revs: dict, rep: SyncReport, ticket_node: str | None = None) -> None:
     pid, p = b.project_id, t["payload"]
     target = p.get("target") or {}
     # The environment of evidence is the environment its deployment ran in; PulseLab's own label is only a fallback.
@@ -179,7 +293,7 @@ def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, d
                 located_cache[ck] = symbols_named(repo, pid, dep["revision_id"], e["operation"])
             hits = located_cache[ck]
             if len(hits) == 1:
-                man = revision_manifest(repo, pid, dep["revision_id"]) or ""
+                man = _manifest(repo, b, dep["revision_id"])
                 rels.append(prepare_rel("LOCATES", "LogEvent", eid, "CodeSymbol", hits[0]["id"], pid, I.edge_key("LOCATES", eid, hits[0]["id"]),
                                         {"mapping_method": "operation_name", "certainty": "name_match", "manifest_id": man}))
                 rep.located += 1
@@ -226,6 +340,8 @@ def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, d
                 rels.append(prepare_rel(typ, "Measurement", mid, label, to, pid, I.edge_key(typ, mid, to), props))
             rep.measurements += 1
 
+    if ticket_node:
+        rels.extend(prepare_rel("HAS_EVIDENCE", "Ticket", ticket_node, n.label, n.id, pid, I.edge_key("HAS_EVIDENCE", ticket_node, n.id), {"mapping_method": "ticket_export"}) for n in nodes)
     repo.write_nodes(nodes)
     repo.write_relationships(rels)
     rep.tickets.append(str(t["id"]))
