@@ -41,7 +41,7 @@ async def _setup(client, org, name="Shop"):
 
 async def _jobs(container, org):
     async with container.pool.connection() as conn:
-        return (await (await conn.execute("SELECT count(*) AS n FROM jobs WHERE organization_id=%s", (org["id"],))).fetchone())["n"]
+        return (await (await conn.execute("SELECT count(*) AS n FROM jobs WHERE organization_id=%s AND kind <> 'graph.sync'", (org["id"],))).fetchone())["n"]
 
 
 async def test_manual_ticket_lists_views_and_empty_vs_no_match(client, org):

@@ -26,6 +26,7 @@ from app.domain.connections import service as svc
 from app.envelope import wrap
 from app.errors import Conflict, DependencyUnavailable, Forbidden, NotFound, Unprocessable
 from app.jobs import queue
+from app.jobs.triggers import request_graph_sync
 
 router = APIRouter(tags=["connections"])
 
@@ -108,6 +109,7 @@ async def create_project_connection(
         config=clean_config(body.provider, body.config), secret=body.secret, secret_expires_at=body.secret_expires_at,
         request=request)
     job = await svc.enqueue_verify(conn, row, ctx.org.principal.user_id, ver)
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     return wrap(request, svc.accepted(job, row["id"]))
 

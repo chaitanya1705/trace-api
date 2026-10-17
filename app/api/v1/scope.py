@@ -14,6 +14,7 @@ from app.container import Container
 from app.domain.projects import binding as b
 from app.envelope import wrap
 from app.errors import NotFound, Unprocessable
+from app.jobs.triggers import request_graph_sync
 
 router = APIRouter(tags=["project-scope"])
 
@@ -73,6 +74,7 @@ async def put_repositories(body: ReposPut, request: Request, ctx: ProjectContext
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.repositories.put", target_type="project", target_id=ctx.project_id, request=request,
                 details={"repositories": [r["full_name"] for r in rows]})
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     return await get_repositories(request, ctx, conn)
 
@@ -121,5 +123,6 @@ async def put_mappings(binding_id: UUID, body: MappingsPut, request: Request,
                            " VALUES (%s,%s,%s,%s,%s)", (ctx.org.organization_id, ctx.project_id, binding_id, p.runtime_prefix, p.repo_prefix))
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id,
                 action="project.mappings.put", target_type="repository", target_id=binding_id, request=request)
+    await request_graph_sync(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id)
     await conn.commit()
     return await get_mappings(binding_id, request, ctx, conn)

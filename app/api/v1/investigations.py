@@ -148,9 +148,7 @@ async def sync_evidence(request: Request, ctx: ProjectContext = Depends(project_
     from app.graph import sync as S
     from app.graph.repository import GraphRepository
 
-    bundle = await S.collect(conn, ctx.project_id)
-    repo = GraphRepository(driver[0], driver[1])
-    report = await asyncio.to_thread(S.project, repo, bundle)
+    report = await S.run(conn, GraphRepository(driver[0], driver[1]), ctx.project_id)
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id, action="graph.sync",
                 target_type="project", target_id=ctx.project_id, request=request, details={"events": report.log_events, "deployments": report.deployments})
     await conn.commit()

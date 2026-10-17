@@ -44,4 +44,8 @@ async def store_rows(conn: AsyncConnection, *, organization_id: UUID, project_id
         await conn.execute(
             "UPDATE log_scope_entries SET log_availability='available', availability_note='Logs received', last_event_at=GREATEST(COALESCE(last_event_at, %s), %s)"
             " WHERE connection_id=%s AND provider_resource_id=%s", (ts, ts, connection_id, ppid))
+    if res.accepted:
+        from app.jobs.triggers import request_graph_sync
+
+        await request_graph_sync(conn, organization_id=organization_id, project_id=project_id)
     return res

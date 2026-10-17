@@ -21,6 +21,7 @@ from app.domain.tickets import service as svc
 from app.domain.tickets.pulselab import TicketFields, parse_export
 from app.envelope import wrap
 from app.errors import Conflict, TraceError, Unprocessable
+from app.jobs.triggers import request_graph_sync
 from app.pagination import clamp_limit, decode_cursor, encode_cursor
 
 router = APIRouter(tags=["tickets"])
@@ -120,6 +121,7 @@ async def create_ticket(body: TicketCreate, request: Request, org: OrgContext = 
     await svc.require_create_rights(conn, org, body.project_id)
     row, outcome = await svc.upsert_ticket(conn, org, source="api" if body.external_id else "manual", f=f, payload=None,
                                            project_id=body.project_id, request=request)
+    await request_graph_sync(conn, organization_id=org.organization_id, project_id=row["project_id"])
     await conn.commit()
     return await _ticket_response(request, conn, row, outcome)
 
@@ -147,6 +149,7 @@ async def import_pulselab(
     f = parse_export(doc)
     await svc.require_create_rights(conn, org, project_id)
     row, outcome = await svc.upsert_ticket(conn, org, source="pulselab", f=f, payload=doc, project_id=project_id, request=request)
+    await request_graph_sync(conn, organization_id=org.organization_id, project_id=row["project_id"])
     await conn.commit()
     return await _ticket_response(request, conn, row, outcome)
 
@@ -211,7 +214,8 @@ async def patch_ticket(ticket_id: UUID, body: TicketPatch, request: Request, org
         sets.append("environment_key=%s")
         params.append((body.environment_key or "").strip().lower() or None)
     out = await (await conn.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s RETURNING *", (*params, ticket_id))).fetchone()
-    # Deliberately no job is enqueued here: assignment/refresh/open never start a run (R-004, D-01).
+    # Assignment/refresh/open never start a run (R-004, D-01). Only the ticket itself is projected into the evidence graph.
+    await request_graph_sync(conn, organization_id=org.organization_id, project_id=out["project_id"])
     await audit(conn, organization_id=org.organization_id, project_id=out["project_id"], actor=org.principal.user_id,
                 action="ticket.assign" if assigned else "ticket.update", target_type="ticket", target_id=ticket_id, request=request,
                 details={"fields": sorted(given)})
