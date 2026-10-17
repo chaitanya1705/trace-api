@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +18,8 @@ from app.auth.authz import Cap
 from app.auth.deps import ProjectContext, get_conn, get_container, project_access
 from app.container import Container
 from app.domain.ingest.app_events import normalize_app_event
+from app.domain.ingest.graph_apply import graph_state
+from app.domain.ingest.intake import finish
 from app.domain.ingest.store import env_lookup, store_rows
 from app.domain.ingest.vercel_logs import MAX_EVENTS_PER_BATCH, parse_body
 from app.envelope import wrap
@@ -35,6 +37,7 @@ class PayloadTooLarge(TraceError):
 
 class SourceIn(BaseModel):
     environment_key: str | None = Field(None, max_length=40)  # applied to events that carry no environment of their own
+    service_key: str | None = Field(None, max_length=64)      # declared service for events no deployment can place; unset = such events have no service
 
 
 def endpoint_url(c: Container, connection_id: UUID) -> str:
@@ -113,11 +116,15 @@ async def _view(conn: AsyncConnection, c: Container, project_id: UUID, row: dict
     if row is None:
         return {"configured": False, "forwarder_snippet": FORWARDER, "hook_snippet": HOOK, "accepted_fields": "event_id, event_time, message, level, request_id, run_id, component_id, operation, event_name, duration_ms, error_type, source_revision, deployment_id"}
     has = await (await conn.execute("SELECT 1 FROM connection_secrets WHERE connection_id=%s AND kind=%s", (row["id"], KIND))).fetchone()
-    last = await (await conn.execute("SELECT created_at, received, accepted, duplicates, rejected FROM ingestion_batches WHERE connection_id=%s ORDER BY created_at DESC LIMIT 1", (row["id"],))).fetchone()
+    last = await (await conn.execute(
+        "SELECT b.id, b.created_at, b.received, b.accepted, b.duplicates, b.rejected, b.reason, b.truncated, b.unmapped,"
+        " (SELECT COALESCE(jsonb_object_agg(g.graph_status, g.n), '{}'::jsonb) FROM (SELECT graph_status, count(*) AS n FROM evidence_inbox WHERE batch_id=b.id GROUP BY graph_status) g) AS graph"
+        " FROM ingestion_batches b WHERE b.connection_id=%s AND b.via='app_push' ORDER BY b.created_at DESC LIMIT 1", (row["id"],))).fetchone()
     n = (await (await conn.execute("SELECT count(*) AS n FROM evidence_inbox WHERE connection_id=%s", (row["id"],))).fetchone())["n"]
     return {"configured": True, "connection_id": row["id"], "endpoint_url": endpoint_url(c, row["id"]), "signature_header": f"{SIG_HEADER}: sha256=<hex HMAC-SHA256 of the raw request body>",
-            "environment_key": (row["config"] or {}).get("environment_key"), "secret_configured": has is not None, "secret": new_secret, "secret_shown_once": new_secret is not None,
+            "environment_key": (row["config"] or {}).get("environment_key"), "service_key": (row["config"] or {}).get("service_key"), "secret_configured": has is not None, "secret": new_secret, "secret_shown_once": new_secret is not None,
             "last_batch_at": last["created_at"] if last else None, "last_batch": dict(last) if last else None, "stored_events": n,
+            "graph": {"configured": c.extras.get("neo4j") is not None, **await graph_state(conn, project_id, row["id"])},
             "forwarder_snippet": FORWARDER, "hook_snippet": HOOK,
             "accepted_fields": "event_id, event_time, message, level, request_id, run_id, component_id, operation, event_name, duration_ms, error_type, source_revision, deployment_id"}
 
@@ -133,13 +140,16 @@ async def create_source(body: SourceIn, request: Request, ctx: ProjectContext = 
     env_key = body.environment_key.strip().lower() if body.environment_key else None
     if env_key and env_key not in await env_lookup(conn, ctx.project_id):
         raise Unprocessable(f"Unknown environment: {env_key}")
+    svc_key = body.service_key.strip().lower() if body.service_key else None
+    if svc_key and not await (await conn.execute("SELECT 1 FROM services WHERE project_id=%s AND service_key=%s", (ctx.project_id, svc_key))).fetchone():
+        raise Unprocessable(f"Unknown service: {svc_key}")
     row = await _source(conn, ctx.project_id)
     if row is None:
         row = await (await conn.execute(
             "INSERT INTO connections(organization_id,project_id,provider,kind,auth_method,status,config,created_by,last_verified_at) VALUES (%s,%s,'generic','telemetry','signed_webhook','connected',%s::jsonb,%s,now()) RETURNING *",
-            (ctx.org.organization_id, ctx.project_id, json.dumps({"environment_key": env_key}), ctx.org.principal.user_id))).fetchone()
+            (ctx.org.organization_id, ctx.project_id, json.dumps({"environment_key": env_key, "service_key": svc_key}), ctx.org.principal.user_id))).fetchone()
     else:
-        row = await (await conn.execute("UPDATE connections SET config = config || %s::jsonb WHERE id=%s RETURNING *", (json.dumps({"environment_key": env_key}), row["id"]))).fetchone()
+        row = await (await conn.execute("UPDATE connections SET config = config || %s::jsonb WHERE id=%s RETURNING *", (json.dumps({"environment_key": env_key, "service_key": svc_key}), row["id"]))).fetchone()
     sec = await _new_secret(conn, c, row)
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id, action="log_source.secret", target_type="connection", target_id=row["id"], request=request)
     await conn.commit()
@@ -150,8 +160,6 @@ async def create_source(body: SourceIn, request: Request, ctx: ProjectContext = 
 async def ingest_events(connection_id: UUID, request: Request, conn: AsyncConnection = Depends(get_conn), c: Container = Depends(get_container)):
     """Public on purpose: the application posts here. The HMAC-SHA256 signature is the authentication; the answer acknowledges durable receipt."""
     raw = await request.body()
-    if len(raw) > c.settings.ingest_max_body_bytes:
-        raise PayloadTooLarge("Batch is too large")
     row = await (await conn.execute("SELECT * FROM connections WHERE id=%s AND provider='generic' AND kind='telemetry'", (connection_id,))).fetchone()
     secret = await _secret(conn, c, connection_id) if row else None
     if row is None or secret is None:
@@ -160,11 +168,19 @@ async def ingest_events(connection_id: UUID, request: Request, conn: AsyncConnec
         raise Unauthenticated("Invalid signature", code="invalid_signature")
     if row["status"] != "connected" or row["project_id"] is None:
         raise Conflict("This source is not active", code="source_not_active")
-    items = parse_body(raw)
-    if len(items) == 1 and isinstance(items[0], dict) and isinstance(items[0].get("events"), list):
-        items = items[0]["events"]
-        if len(items) > MAX_EVENTS_PER_BATCH:
-            raise Unprocessable(f"Batch has more than {MAX_EVENTS_PER_BATCH} events", code="batch_too_large")
+    # From here the sender is authenticated: whatever is refused or damaged is accounted for (and becomes a coverage gap in the graph).
+    if len(raw) > c.settings.ingest_max_body_bytes:
+        await finish(conn, c, row, via="app_push", received=0, reason="oversize_body", body_bytes=len(raw))
+        raise PayloadTooLarge("Batch is too large")
+    try:
+        items = parse_body(raw)
+        if len(items) == 1 and isinstance(items[0], dict) and isinstance(items[0].get("events"), list):
+            items = items[0]["events"]
+            if len(items) > MAX_EVENTS_PER_BATCH:
+                raise Unprocessable(f"Batch has more than {MAX_EVENTS_PER_BATCH} events", code="batch_too_large")
+    except Unprocessable as e:
+        await finish(conn, c, row, via="app_push", received=0, reason="batch_too_large" if e.code == "batch_too_large" else "malformed_payload", body_bytes=len(raw))
+        raise
     envs = await env_lookup(conn, row["project_id"])
     default_env = (row["config"] or {}).get("environment_key")
     rows, rejected = [], 0
@@ -174,8 +190,7 @@ async def ingest_events(connection_id: UUID, request: Request, conn: AsyncConnec
             rejected += 1
             continue
         rows.append((r, envs.get(r.env_key) if r.env_key else None))
-    res = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=connection_id, provider="app_push", rows=rows)
-    await conn.execute("INSERT INTO ingestion_batches(organization_id,project_id,connection_id,received,accepted,duplicates,out_of_scope,rejected) VALUES (%s,%s,%s,%s,%s,%s,0,%s)",
-                       (row["organization_id"], row["project_id"], connection_id, len(items), res.accepted, res.duplicates, rejected))
-    await conn.commit()
+    batch_id = uuid4()
+    res = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=connection_id, provider="app_push", rows=rows, batch_id=batch_id)
+    await finish(conn, c, row, via="app_push", received=len(items), res=res, rejected=rejected, body_bytes=len(raw), batch_id=batch_id)
     return JSONResponse({"received": len(items), "accepted": res.accepted, "duplicates": res.duplicates, "rejected": rejected})

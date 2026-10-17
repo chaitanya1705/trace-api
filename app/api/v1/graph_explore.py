@@ -242,7 +242,7 @@ async def graph_schema(request: Request, ctx: ProjectContext = Depends(project_a
     """Labels and relationship types present in this project's graph, with counts (Neo4j Browser's database overview), plus the
     ontology they come from and how many stored events have not reached the graph yet."""
     data = await asyncio.to_thread(_schema, driver[0], driver[1], str(ctx.project_id))
-    pending = (await (await conn.execute("SELECT count(*) FILTER (WHERE graph_status='pending') AS pending, count(*) FILTER (WHERE graph_status='failed') AS failed "
+    pending = (await (await conn.execute("SELECT count(*) FILTER (WHERE graph_status IN ('pending','claimed')) AS pending, count(*) FILTER (WHERE graph_status='failed') AS failed "
                                          "FROM evidence_inbox WHERE project_id=%s", (ctx.project_id,))).fetchone())
     data["ontology"] = {"version": O.ONTOLOGY_VERSION, "labels": {k: v.doc for k, v in O.NODES.items()},
                         "relationships": {k: {"from": sorted(v.sources), "to": sorted(v.targets), "doc": v.doc} for k, v in O.RELATIONSHIPS.items()}}

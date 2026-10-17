@@ -141,15 +141,24 @@ async def get_evidence(request: Request, ids: list[str] = Query(..., max_length=
 
 
 @router.post("/projects/{project_id}/graph/sync")
-async def sync_evidence(request: Request, ctx: ProjectContext = Depends(project_access(Cap.INDEX)), conn: AsyncConnection = Depends(get_conn), driver=Depends(neo4j_driver)):
-    """Load the project's deployments and runtime evidence from the control plane into the evidence graph (idempotent)."""
+async def sync_evidence(request: Request, retry_failed: bool = Query(False), ctx: ProjectContext = Depends(project_access(Cap.INDEX)), conn: AsyncConnection = Depends(get_conn), driver=Depends(neo4j_driver)):
+    """Load the project's deployments, PulseLab ticket evidence and ingested log evidence from the control plane into the evidence graph
+    (idempotent). Ingested logs are normally applied by the worker as they arrive; this applies whatever is due now (bounded) and reports what
+    the graph has acknowledged. `retry_failed=true` re-queues rows the graph refused earlier."""
     from dataclasses import asdict
 
+    from app.domain.ingest import graph_apply as ga
     from app.graph import sync as S
     from app.graph.repository import GraphRepository
 
-    report = await S.run(conn, GraphRepository(driver[0], driver[1]), ctx.project_id)
+    bundle = await S.collect(conn, ctx.project_id)
+    repo = GraphRepository(driver[0], driver[1])
+    report = await asyncio.to_thread(S.project, repo, bundle)
+    if retry_failed:
+        await ga.retry_failed(conn, ctx.project_id)
+    evidence = await ga.apply_pending(request.app.state.container, ctx.org.organization_id, ctx.project_id, f"api:{uuid.uuid4().hex[:8]}", max_batches=5)
+    state = await ga.graph_state(conn, ctx.project_id)
     await audit(conn, organization_id=ctx.org.organization_id, project_id=ctx.project_id, actor=ctx.org.principal.user_id, action="graph.sync",
-                target_type="project", target_id=ctx.project_id, request=request, details={"events": report.log_events, "deployments": report.deployments})
+                target_type="project", target_id=ctx.project_id, request=request, details={"events": report.log_events, "deployments": report.deployments, "ingested_applied": evidence["applied"]})
     await conn.commit()
-    return wrap(request, asdict(report))
+    return wrap(request, {**asdict(report), "evidence": {**evidence, "state": state}})

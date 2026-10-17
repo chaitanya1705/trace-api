@@ -209,7 +209,7 @@ Stop expansion when no relevant new evidence, unresolved revision boundary, max 
 
 Impact categories are a set: direct_exposure, potential_propagation, observed_impact, unknown. A service may be directly changed and observed failing. Unknown specifically describes uncovered dimensions; do not suppress existing observations. Every classification cites path/source and environment/window. Healthy requires a defined check with coverage; no errors in absent telemetry is not healthy.
 
-EvidenceGap kinds: source_disconnected, permission_missing, rate_limited, stale, partial_parse, ambiguous_revision, unsupported_language, unresolved_dependency, truncated_query, insufficient_traffic, missing_baseline, redacted_content. Preserve detection/resolution time and source job. Closing gap does not rewrite old assessments.
+EvidenceGap kinds: source_disconnected, permission_missing, rate_limited, stale, partial_parse, ambiguous_revision, unsupported_language, unresolved_dependency, truncated_query, insufficient_traffic, missing_baseline, redacted_content, and for telemetry intake (A10) rejected_input, oversize_input, truncated_input, unmapped_scope. Preserve detection/resolution time and source job. Closing gap does not rewrite old assessments.
 
 Findings split factual Claim nodes and recommendations. Every factual claim cites retrieved primary evidence; unsupported statements become explicit uncertainty or are rejected. Resolution plan references finding and exact base manifest. External approvals remain control-plane facts linked by patch hash; patch edits create new version. Verification uses explicit criteria/version/window and traffic coverage. No merger-to-recovery shortcut.
 

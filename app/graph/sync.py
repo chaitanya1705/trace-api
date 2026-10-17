@@ -39,11 +39,6 @@ class Bundle:
     repositories: list[dict] = field(default_factory=list)
     service_mappings: list[dict] = field(default_factory=list)
     all_tickets: list[dict] = field(default_factory=list)
-    #: stored log events not yet in the graph (evidence_inbox rows with graph_status='pending'), oldest first
-    inbox: list[dict] = field(default_factory=list)
-    #: filled by `project`: inbox row ids written to the graph / refused by the writer
-    synced_inbox: list = field(default_factory=list)
-    failed_inbox: list = field(default_factory=list)
     _manifests: dict = field(default_factory=dict)
 
 
@@ -61,9 +56,6 @@ class SyncReport:
     connections: int = 0
     repositories: int = 0
     ticket_nodes: int = 0
-    stored_events: int = 0
-    stored_events_failed: int = 0
-    stored_events_remaining: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, why: str, n: int = 1) -> None:
@@ -96,31 +88,9 @@ async def collect(conn: AsyncConnection, project_id: UUID) -> Bundle:
         "SELECT provider_deployment_id, connection_id FROM deployments WHERE project_id=%s")).fetchall()}
     for d in b.deployments:
         d["connection_id"] = deployment_conn.get(d["provider_deployment_id"])
-    b.inbox = [dict(r) for r in await (await conn.execute(
-        "SELECT i.id, i.connection_id, i.ticket_id, i.provider, i.source_record_key, i.event_time, i.level, i.source, i.deployment_id, i.request_id, "
-        "i.status_code, i.message, i.content_hash, i.extra, e.environment_key FROM evidence_inbox i LEFT JOIN environments e ON e.id = i.environment_id "
-        "WHERE i.project_id=%s AND i.graph_status='pending' ORDER BY i.ingested_at, i.id LIMIT %s", (project_id, MAX_EVENTS))).fetchall()]
     return b
 
 
-async def remaining_pending(conn: AsyncConnection, project_id: UUID) -> int:
-    row = await (await conn.execute("SELECT count(*) AS n FROM evidence_inbox WHERE project_id=%s AND graph_status='pending'", (project_id,))).fetchone()
-    return row["n"]
-
-
-async def run(conn: AsyncConnection, repo: GraphRepository, project_id: UUID) -> SyncReport:
-    """Collect from Postgres, write the graph in a worker thread, then record which stored events reached the graph."""
-    import asyncio
-
-    bundle = await collect(conn, project_id)
-    report = await asyncio.to_thread(project, repo, bundle)
-    if bundle.synced_inbox:
-        await conn.execute("UPDATE evidence_inbox SET graph_status='synced' WHERE id = ANY(%s)", (bundle.synced_inbox,))
-    if bundle.failed_inbox:
-        await conn.execute("UPDATE evidence_inbox SET graph_status='failed' WHERE id = ANY(%s)", (bundle.failed_inbox,))
-    report.stored_events_remaining = await remaining_pending(conn, project_id)
-    await conn.commit()
-    return report
 
 
 def _manifest(repo: GraphRepository, b: Bundle, revision_id: str) -> str:
@@ -134,17 +104,27 @@ def _t(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone(UTC) if v else None
 
 
-def _revisions_by_sha(repo: GraphRepository, project_id: str) -> dict[str, dict]:
+def revisions_by_sha(repo: GraphRepository, project_id: str) -> dict[str, dict]:
     with repo._driver.session(database=repo._db) as s:
         return {r["sha"]: {"id": r["id"], "repository_id": r["rep"]} for r in s.run(
             "MATCH (v:Entity:Revision {project_id: $p}) RETURN v.commit_sha AS sha, v.id AS id, v.repository_id AS rep", p=project_id)}
 
 
-def _symbols_named(repo: GraphRepository, project_id: str, revision_id: str, name: str) -> list[dict]:
+def symbols_named(repo: GraphRepository, project_id: str, revision_id: str, name: str) -> list[dict]:
     with repo._driver.session(database=repo._db) as s:
         return [r.data() for r in s.run(
             "MATCH (f:Entity:SourceFile {project_id: $p, revision_id: $r})-[:DEFINES]->(c:Entity:CodeSymbol {project_id: $p}) "
             "WHERE c.qualified_name = $n OR c.qualified_name ENDS WITH ('.' + $n) RETURN c.id AS id, c.qualified_name AS name, f.path AS path", p=project_id, r=revision_id, n=name)]
+
+
+def write_deployment_row(repo: GraphRepository, pid: str, d: dict, *, env_id: str, service_id: str, revs: dict[str, dict]) -> dict:
+    """One Postgres deployment row as a Deployment node. The revision is linked only when the commit is an indexed revision;
+    otherwise the mapping stays unknown. Shared by the on-demand sync and the evidence applier so both write identical nodes."""
+    rev = revs.get((d["commit_sha"] or "").lower())
+    state = (d["state"] or "").lower()
+    did = write_deployment(repo, pid, provider_id=d["provider_deployment_id"], service_id=service_id, environment_id=env_id, revision_id=rev["id"] if rev else None,
+                           event_time=d["created_at_provider"], status="ready" if state == "ready" else state or "unknown", exposure_status="unknown")
+    return {"id": did, "service_id": service_id, "environment_id": env_id, "revision_id": rev["id"] if rev else None, "sha": (d["commit_sha"] or "").lower()}
 
 
 def project(repo: GraphRepository, b: Bundle) -> SyncReport:
@@ -152,7 +132,7 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
     pid = b.project_id
     prj = I.project_node_id(pid)
     repo.write_nodes([prepare_node("Project", prj, pid, {"organization_id": b.organization_id, "name": b.project_name})])
-    revs = _revisions_by_sha(repo, pid)
+    revs = revisions_by_sha(repo, pid)
     env_ids: dict[str, str] = {}
     for e in b.environments:
         eid = I.environment_id(pid, e["environment_key"])
@@ -189,25 +169,20 @@ def project(repo: GraphRepository, b: Bundle) -> SyncReport:
         if ek not in env_ids or d["created_at_provider"] is None:
             rep.skip("deployment_without_environment_or_time")
             continue
-        sid = service_for(d["provider_project_id"], d["project_name"])
-        rev = revs.get((d["commit_sha"] or "").lower())
-        state = (d["state"] or "").lower()
-        did = write_deployment(repo, pid, provider_id=d["provider_deployment_id"], service_id=sid, environment_id=env_ids[ek], revision_id=rev["id"] if rev else None,
-                               event_time=d["created_at_provider"], status="ready" if state == "ready" else state or "unknown", exposure_status="unknown")
-        dep_info[d["provider_deployment_id"]] = {"id": did, "service_id": sid, "environment_id": env_ids[ek], "revision_id": rev["id"] if rev else None, "sha": (d["commit_sha"] or "").lower()}
+        info = write_deployment_row(repo, pid, d, env_id=env_ids[ek], service_id=service_for(d["provider_project_id"], d["project_name"]), revs=revs)
+        dep_info[d["provider_deployment_id"]] = info
         rep.deployments += 1
-        rep.deployments_with_revision += 1 if rev else 0
-        if not rev:
+        rep.deployments_with_revision += 1 if info["revision_id"] else 0
+        if not info["revision_id"]:
             rep.skip("deployment_revision_not_indexed")
         if con_ids.get(str(d.get("connection_id"))):
             to = con_ids[str(d["connection_id"])]
-            repo.write_relationships([prepare_rel("FROM_SOURCE", "Deployment", did, "SourceConnection", to, pid, I.edge_key("FROM_SOURCE", did, to), {"mapping_method": "provider_api"})])
+            repo.write_relationships([prepare_rel("FROM_SOURCE", "Deployment", info["id"], "SourceConnection", to, pid, I.edge_key("FROM_SOURCE", info["id"], to), {"mapping_method": "provider_api"})])
 
     ticket_ids = _write_tickets(repo, b, prj, env_ids)
     rep.ticket_nodes = len(ticket_ids)
     for t in b.tickets:
         _ticket_evidence(repo, b, t, env_ids, dep_info, revs, rep, ticket_ids.get(str(t["id"])))
-    _stored_events(repo, b, env_ids, dep_info, con_ids, ticket_ids, rep)
     return rep
 
 
@@ -274,69 +249,6 @@ def _write_tickets(repo: GraphRepository, b: Bundle, prj: str, env_ids: dict[str
     return out
 
 
-def _stored_events(repo: GraphRepository, b: Bundle, env_ids: dict, dep_info: dict, con_ids: dict, ticket_ids: dict, rep: SyncReport) -> None:
-    """Log events TRACE stored from the app log source, the Vercel drain or a live capture (evidence_inbox) become LogEvents.
-
-    Links are only the ones the row itself proves: its connection, its mapped environment, the deployment it names. An
-    operation locates code only when exactly one symbol of the deployed revision carries that name (certainty name_match).
-    Written once (immutable); each batch that the writer refuses is marked failed rather than retried forever.
-    """
-    pid = b.project_id
-    env_by_key = {k: v for k, v in env_ids.items()}
-    svc_by_key = {s["service_key"]: I.service_id(pid, s["service_key"]) for s in b.services}
-    located_cache: dict[tuple[str, str], list[dict]] = {}
-    now = datetime.now(UTC)
-    for i in range(0, len(b.inbox), 500):
-        part = b.inbox[i:i + 500]
-        nodes: list[NodeWrite] = []
-        rels: list[RelWrite] = []
-        for row in part:
-            extra = row["extra"] if isinstance(row["extra"], dict) else {}
-            src = str(row["connection_id"]) if row["connection_id"] else f"ticket:{row['ticket_id']}"
-            eid = I.evidence_id(pid, src, row["source_record_key"])
-            env = env_by_key.get(row["environment_key"] or "")
-            dep = dep_info.get(row["deployment_id"] or "")
-            svc = dep["service_id"] if dep else svc_by_key.get(str(extra.get("component_id") or ""))
-            locator = "/".join(str(extra[k]) for k in ("component_id", "operation", "event_name") if extra.get(k)) or row["source"] or row["provider"]
-            nodes.append(prepare_node("LogEvent", eid, pid, {
-                "source_connection_id": src, "source_record_key": row["source_record_key"], "ingested_at": now, "origin": "telemetry",
-                "content_hash": row["content_hash"], "redacted_content": row["message"] or "", "severity": (row["level"] or "info").lower(),
-                "message": row["message"] or "", "event_time": row["event_time"], "request_id": row["request_id"], "environment_id": env,
-                "service_id": svc, "origin_detail": f"{row['provider']}:{extra.get('via') or row['source'] or 'stored'}", "source_locator": locator,
-            }, now=now))
-            if con_ids.get(src):
-                rels.append(prepare_rel("FROM_SOURCE", "LogEvent", eid, "SourceConnection", con_ids[src], pid, I.edge_key("FROM_SOURCE", eid, con_ids[src]), {"mapping_method": "ingest_connection"}))
-            if row["ticket_id"] and ticket_ids.get(str(row["ticket_id"])):
-                tk = ticket_ids[str(row["ticket_id"])]
-                rels.append(prepare_rel("HAS_EVIDENCE", "Ticket", tk, "LogEvent", eid, pid, I.edge_key("HAS_EVIDENCE", tk, eid), {"mapping_method": "ticket_export"}))
-            if env:
-                rels.append(prepare_rel("IN_ENVIRONMENT", "LogEvent", eid, "Environment", env, pid, I.edge_key("IN_ENVIRONMENT", eid, env), {"mapping_method": "source_scope"}))
-            if svc:
-                rels.append(prepare_rel("OBSERVED_ON", "LogEvent", eid, "Service", svc, pid, I.edge_key("OBSERVED_ON", eid, svc),
-                                        {"mapping_method": "deployment_metadata" if dep else "component_id"}))
-            if dep:
-                rels.append(prepare_rel("ASSOCIATED_WITH", "LogEvent", eid, "Deployment", dep["id"], pid, I.edge_key("ASSOCIATED_WITH", eid, dep["id"]), {"mapping_method": "event_deployment_id"}))
-                if dep["revision_id"] and extra.get("operation"):
-                    ck = (dep["revision_id"], str(extra["operation"]))
-                    if ck not in located_cache:
-                        located_cache[ck] = _symbols_named(repo, pid, dep["revision_id"], ck[1])
-                    if len(located_cache[ck]) == 1:
-                        hit = located_cache[ck][0]["id"]
-                        man = _manifest(repo, b, dep["revision_id"])
-                        rels.append(prepare_rel("LOCATES", "LogEvent", eid, "CodeSymbol", hit, pid, I.edge_key("LOCATES", eid, hit),
-                                                {"mapping_method": "operation_name", "certainty": "name_match", "manifest_id": man}))
-                        rep.located += 1
-        try:
-            repo.write_nodes(nodes)
-            repo.write_relationships(rels)
-        except Exception:  # noqa: BLE001 - a refused batch is recorded, not retried in a loop
-            b.failed_inbox.extend(r["id"] for r in part)
-            rep.stored_events_failed += len(part)
-            continue
-        b.synced_inbox.extend(r["id"] for r in part)
-        rep.stored_events += len(part)
-
-
 def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, dep_info: dict, revs: dict, rep: SyncReport, ticket_node: str | None = None) -> None:
     pid, p = b.project_id, t["payload"]
     target = p.get("target") or {}
@@ -378,7 +290,7 @@ def _ticket_evidence(repo: GraphRepository, b: Bundle, t: dict, env_ids: dict, d
         if dep["revision_id"] and e.get("event_name") == "operation.started" and e.get("operation"):
             ck = (dep["revision_id"], e["operation"])
             if ck not in located_cache:
-                located_cache[ck] = _symbols_named(repo, pid, dep["revision_id"], e["operation"])
+                located_cache[ck] = symbols_named(repo, pid, dep["revision_id"], e["operation"])
             hits = located_cache[ck]
             if len(hits) == 1:
                 man = _manifest(repo, b, dep["revision_id"])

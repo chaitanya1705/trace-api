@@ -1,15 +1,15 @@
-"""graph.sync: project the control plane (scope, connections, repositories, deployments, tickets, stored log events) into
-the evidence graph. Queued automatically after anything that adds traceable facts, so Neo4j stays the one place where the
+"""graph.sync: project the control plane (scope, connections, repositories, deployments, tickets) into the evidence graph.
+Stored log events are written by the evidence applier (app/graph/apply_evidence.py), not here. Queued automatically after anything that adds traceable facts, so Neo4j stays the one place where the
 whole project can be traced; `POST /projects/{id}/graph/sync` runs the same thing on demand.
 """
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from app.graph import sync as S
 from app.graph.repository import GraphRepository
 from app.jobs.queue import TransientJobError
-from app.jobs.triggers import request_graph_sync
 from app.jobs.worker import JobContext, handler
 
 
@@ -20,12 +20,8 @@ async def graph_sync(ctx: JobContext) -> dict:
     if driver is None:
         raise TransientJobError("graph_unavailable", "The evidence graph (Neo4j) is not configured.")
     pid = UUID(ctx.job["payload"]["project_id"])
-    repo = GraphRepository(driver, c.settings.neo4j_database)
     async with c.pool.connection() as conn:
-        report = await S.run(conn, repo, pid)
-        # A large backlog continues in a follow-up job rather than one unbounded run.
-        if report.stored_events_remaining and report.stored_events:
-            await request_graph_sync(conn, organization_id=ctx.job["organization_id"], project_id=pid, key=f"{pid}:after:{ctx.job['id']}")
-            await conn.commit()
-    return {"deployments": report.deployments, "tickets": report.ticket_nodes, "stored_events": report.stored_events,
-            "failed": report.stored_events_failed, "remaining": report.stored_events_remaining}
+        bundle = await S.collect(conn, pid)
+    report = await asyncio.to_thread(S.project, GraphRepository(driver, c.settings.neo4j_database), bundle)
+    return {"environments": report.environments, "services": report.services, "connections": report.connections, "repositories": report.repositories,
+            "deployments": report.deployments, "tickets": report.ticket_nodes}

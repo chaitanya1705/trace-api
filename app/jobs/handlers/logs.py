@@ -9,11 +9,12 @@ scoped projects a 30 s capture stored 2 lines where one scoped project stored 13
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.connectors import vercel as vc
 from app.connectors.base import ProviderError
 from app.domain.connections import service as svc
+from app.domain.ingest.intake import finish
 from app.domain.ingest.store import env_lookup, store_rows
 from app.domain.ingest.vercel_logs import normalize_runtime
 from app.jobs.queue import PermanentJobError, TransientJobError
@@ -85,28 +86,33 @@ async def capture_logs(ctx: JobContext) -> dict:
 async def _follow(ctx: JobContext, row, client, envs, ppid: str, ek: str, dep: str, listen: float) -> dict:
     counts = {"read": 0, "accepted": 0, "duplicates": 0}
     batch: list = []
+    unusable = 0   # lines in the current slice that could not be normalised (counted, never silently dropped)
     try:
         async for rec in vc.tail_runtime_logs(client, ppid, dep, seconds=listen):
             counts["read"] += 1
             r = normalize_runtime(rec, deployment_id=dep, provider_project_id=ppid, env_key=ek)
             if r is not None:
                 batch.append((r, envs.get(ek)))
-            if len(batch) >= FLUSH:
-                await _flush(ctx.container, row, batch, counts)
-                batch = []
+            else:
+                unusable += 1
+            if len(batch) + unusable >= FLUSH:
+                await _flush(ctx.container, row, batch, counts, unusable)
+                batch, unusable = [], 0
             await ctx.check_cancel()
     except ProviderError:
-        if batch:
-            await _flush(ctx.container, row, batch, counts)
+        if batch or unusable:
+            await _flush(ctx.container, row, batch, counts, unusable)
         raise
-    if batch:
-        await _flush(ctx.container, row, batch, counts)
+    if batch or unusable:
+        await _flush(ctx.container, row, batch, counts, unusable)
     return {"provider_project_id": ppid, "environment": ek, "deployment": dep, "outcome": "captured", **counts}
 
 
-async def _flush(c, row, batch, counts):
+async def _flush(c, row, batch, counts, unusable: int = 0):
+    """Store one slice of what the stream delivered, account for it as an intake batch and queue the graph applier, in one transaction."""
+    batch_id = uuid4()
     async with c.pool.connection() as conn:
-        r = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=row["id"], provider="vercel", rows=batch)
-        await conn.commit()
+        r = await store_rows(conn, organization_id=row["organization_id"], project_id=row["project_id"], connection_id=row["id"], provider="vercel", rows=batch, batch_id=batch_id)
+        await finish(conn, c, row, via="capture", received=len(batch) + unusable, res=r, rejected=unusable, batch_id=batch_id)
     counts["accepted"] += r.accepted
     counts["duplicates"] += r.duplicates
