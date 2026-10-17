@@ -35,6 +35,21 @@
         "title": "AcceptedOut",
         "type": "object"
       },
+      "AskIn": {
+        "properties": {
+          "question": {
+            "maxLength": 500,
+            "minLength": 2,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskIn",
+        "type": "object"
+      },
       "AttachIn": {
         "properties": {
           "draft_id": {
@@ -70,6 +85,31 @@
           "installation_id"
         ],
         "title": "AttachIn",
+        "type": "object"
+      },
+      "CaptureIn": {
+        "properties": {
+          "environment": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment"
+          },
+          "seconds": {
+            "default": 30,
+            "maximum": 60.0,
+            "minimum": 5.0,
+            "title": "Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "CaptureIn",
         "type": "object"
       },
       "ConnectionBrief": {
@@ -2072,6 +2112,89 @@
         ]
       }
     },
+    "/api/v1/connections/{connection_id}/drain": {
+      "get": {
+        "operationId": "drain_status_api_v1_connections__connection_id__drain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drain Status",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/v1/connections/{connection_id}/drain/secret": {
+      "post": {
+        "description": "(Re)generate the drain signing secret. It is shown once: paste it into Vercel's Drain 'signature secret' together with the URL.",
+        "operationId": "make_drain_secret_api_v1_connections__connection_id__drain_secret_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Make Drain Secret",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
     "/api/v1/connections/{connection_id}/resources": {
       "get": {
         "description": "Discovery with credentials kept server-side. GitHub: repositories. Vercel: projects. Bounded (5 pages).",
@@ -2234,6 +2357,48 @@
         ]
       }
     },
+    "/api/v1/ingest/vercel/{connection_id}": {
+      "post": {
+        "description": "Public on purpose: Vercel posts here. The HMAC signature is the authentication. The response acknowledges durable receipt, not analysis.",
+        "operationId": "ingest_vercel_api_v1_ingest_vercel__connection_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Vercel",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
     "/api/v1/integrations/demo": {
       "get": {
         "operationId": "demo_links_api_v1_integrations_demo_get",
@@ -2250,6 +2415,71 @@
         "summary": "Demo Links",
         "tags": [
           "demo"
+        ]
+      }
+    },
+    "/api/v1/investigations": {
+      "get": {
+        "operationId": "list_investigations_api_v1_investigations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ticket_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ticket Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Investigations",
+        "tags": [
+          "investigations"
         ]
       }
     },
@@ -3388,6 +3618,61 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/evidence": {
+      "get": {
+        "description": "Evidence viewer: log events and source chunks by id, scoped to the project.",
+        "operationId": "get_evidence_api_v1_projects__project_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ids",
+            "required": true,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 50,
+              "title": "Ids",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evidence",
+        "tags": [
+          "investigations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/graph/code": {
       "get": {
         "description": "Published code graph (symbols and structural relationships). Structure only: static reachability is never runtime proof.",
@@ -3602,6 +3887,160 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/graph/sync": {
+      "post": {
+        "description": "Load the project's deployments and runtime evidence from the control plane into the evidence graph (idempotent).",
+        "operationId": "sync_evidence_api_v1_projects__project_id__graph_sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Evidence",
+        "tags": [
+          "investigations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/investigations/{run_id}": {
+      "get": {
+        "operationId": "get_investigation_api_v1_projects__project_id__investigations__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Investigation",
+        "tags": [
+          "investigations"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/investigations/{run_id}/ask": {
+      "post": {
+        "operationId": "ask_investigation_api_v1_projects__project_id__investigations__run_id__ask_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask Investigation",
+        "tags": [
+          "investigations"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/log-scope": {
       "get": {
         "operationId": "get_log_scope_api_v1_projects__project_id__log_scope_get",
@@ -3689,6 +4128,293 @@
         "summary": "Put Log Scope",
         "tags": [
           "project-scope"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/logs": {
+      "get": {
+        "description": "Stored logs only (filters are TRACE filters, not provider query syntax). 'Nothing stored' and 'nothing matched' are told apart.",
+        "operationId": "search_logs_api_v1_projects__project_id__logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Environment"
+            }
+          },
+          {
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(info|warning|error|fatal)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Level"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Request Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "deployment_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Deployment Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Logs",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/logs/capture": {
+      "post": {
+        "description": "Explicit 'Fetch from source': a bounded, read-only live capture. It stores what arrives during the window; it is not history.",
+        "operationId": "capture_api_v1_projects__project_id__logs_capture_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/logs/status": {
+      "get": {
+        "description": "Per-resource freshness. 'No events yet' is a gap, never healthy; 'available' means events were actually received.",
+        "operationId": "logs_status_api_v1_projects__project_id__logs_status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logs Status",
+        "tags": [
+          "logs"
         ]
       }
     },
@@ -4566,6 +5292,48 @@
         "summary": "Patch Ticket",
         "tags": [
           "tickets"
+        ]
+      }
+    },
+    "/api/v1/tickets/{ticket_id}/investigate": {
+      "post": {
+        "description": "Explicit Investigate / Rerun. Assigning or opening a ticket never calls this.",
+        "operationId": "start_investigation_api_v1_tickets__ticket_id__investigate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ticket Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Investigation",
+        "tags": [
+          "investigations"
         ]
       }
     },

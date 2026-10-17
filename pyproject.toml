@@ -48,3 +48,5 @@ ignore_missing_imports = true
 "tests/*" = ["E501"]
 "app/graph/ontology.py" = ["E501"]  # the ontology is a table; one spec per line reads best
 "app/graph/*.py" = ["E501"]  # Cypher strings stay on one line so templates read as written
+"app/investigate/*.py" = ["E501"]  # prompts and Cypher stay on one line
+"app/api/v1/investigations.py" = ["E501"]
