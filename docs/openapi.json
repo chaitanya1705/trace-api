@@ -6580,6 +6580,46 @@
         ]
       }
     },
+    "/api/v1/tickets/import/pulselab/confirm": {
+      "post": {
+        "description": "Store an incident export only after the caller submits the fields reviewed in New Ticket.",
+        "operationId": "confirm_pulselab_api_v1_tickets_import_pulselab_confirm_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Confirm Pulselab",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
+    "/api/v1/tickets/import/pulselab/preview": {
+      "post": {
+        "description": "Parse a reporter-supplied incident export for review without writing a ticket or graph job.",
+        "operationId": "preview_pulselab_api_v1_tickets_import_pulselab_preview_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Preview Pulselab",
+        "tags": [
+          "tickets"
+        ]
+      }
+    },
     "/api/v1/tickets/{ticket_id}": {
       "get": {
         "operationId": "get_ticket_api_v1_tickets__ticket_id__get",
